@@ -1,5 +1,11 @@
 # ImageCrate / VideoHarbor — initial design v1
 
+## VideoHarbor UX整理 — 2026-10-31（以下の表示設計を更新）
+
+目的別の二つの画面と既存の保存・録画処理を維持し、情報の優先順位と状態表示を整理する。英語の装飾見出し、通常取得の注意色表示、常設の長文を減らす。候補の形式・配信元・寸法・保存状態は一覧に残し、URLを詳細へ。録画はアイコン付き対象カード、音声switch、開閉する保存方法と補足、待機時の図形、録画中の実プレビューと固定操作パネルを使う。短い動きは状態変化にだけ対応し、reduced-motionで無効。
+
+詳細な比較案、独立審査、状態・focusの契約、実装開始判断は [UX-2026-10-31.md](UX-2026-10-31.md)。既存の権限・controller・保存プロトコルは変更しない。以下の「常設設定」「装飾アニメーション不要」は、このUX整理の表示方針を優先する。人間の理解・好み・テンポは自動試験とは別の確認とする。
+
 ## v2 amendments (supersede v1 wording below)
 
 - PL-01 / ART-02: Video workspace has two clearly labeled views, default '動画を保存', second '画面を録画'. Direct file saves are '元のファイルを保存'. Stream/blob candidates grouped separately as '直接保存に未対応。録画を試せます' with only a link to recording settings, never automatic start. Empty results also link to settings. Recording explains '選んだタブ・画面全体をWebMで実時間録画。音声の可否は共有対象・OSによる。保護された映像は保存できない場合があります'. Active capture and result show actual track audio presence, method and format.
