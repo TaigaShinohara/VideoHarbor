@@ -1,20 +1,49 @@
 <!doctype html>
-<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>VideoHarbor</title><link rel="stylesheet" href="workspace.css"></head>
-<body class="videos"><main class="shell">
-<header class="topbar"><div class="brand"><span class="brand-icon" aria-hidden="true">▶</span><div><p class="eyebrow">SAVE IT. OR CAPTURE IT.</p><h1>VideoHarbor</h1></div></div><div class="header-actions"><button id="source" class="secondary">元ページを開く</button><button id="scan" class="secondary">再スキャン</button></div></header>
-<div class="source-line"><span>取得元</span><strong id="source-title" class="source-title">読み込み中…</strong><span id="source-domain"></span></div>
-<p id="message" class="notice" role="status" aria-live="polite">ページを確認しています。</p><p id="error" class="error" role="alert" hidden></p>
-<div id="notices" class="notice" hidden></div>
-
-<nav class="tabs" role="tablist" aria-label="保存方法"><button id="download-tab" role="tab" aria-selected="true" aria-controls="download-view">動画を保存</button><button id="record-tab" role="tab" aria-selected="false" aria-controls="record-view">画面を録画</button></nav>
-<section id="download-view" role="tabpanel" aria-labelledby="download-tab"><div class="intro"><div><p class="eyebrow">SAVE THE ORIGINAL</p><h2 tabindex="-1" id="download-heading">動画ファイルを、そのまま保存。</h2><p>ページに見つかった動画から選択します。直接保存に対応したファイルが表示されます。</p></div></div>
-<div class="control-row"><span id="count"></span><button class="secondary" id="try-record">見つからないときは録画を試す</button></div><div id="direct-list" class="video-list"></div>
-<div id="empty" class="empty" hidden>直接保存できる動画が見つかりません。元ページで動画を再生して再スキャンするか、録画を試してください。</div>
-<details id="unsupported" hidden><summary>直接保存できない候補 <span id="unsupported-count"></span></summary><p class="meta">ストリーミングやページ内データは直接保存に未対応です。録画を試せますが、保護された映像などは保存できない場合があります。</p><div id="unsupported-list" class="video-list"></div></details>
-<footer class="footer"><p id="batch" class="batch-status" aria-live="polite"></p><div class="header-actions"><button id="cancel" class="secondary" hidden>保存を停止</button><button id="retry" class="secondary" hidden>中断分を再試行</button></div></footer></section>
-<section id="record-view" role="tabpanel" aria-labelledby="record-tab" hidden><div class="intro"><div><p class="eyebrow">CAPTURE THE MOMENT</p><h2 tabindex="-1" id="record-heading">再生した画面を、録画する。</h2><p>選んだタブ・画面全体をWebMで実時間録画します。再生時間ぶんの時間がかかります。</p></div></div>
-<div class="record-layout"><div class="record-settings"><fieldset id="record-options"><legend>録画の設定</legend><label class="field">録画対象<select id="record-mode"><option value="tab">元のタブを録画</option><option value="display">Chromeでタブ・画面・ウィンドウを選ぶ</option></select></label><label class="check-field"><input id="record-audio" type="checkbox" checked> タブ・共有対象の音声を含める</label><p class="meta">マイクは使いません。音声の可否は共有対象・OSによります。</p><label class="field">保存方法<select id="record-output"><option value="memory">停止後にファイルへ保存</option><option value="file">選んだファイルへ順次書き込み</option></select></label><div id="file-choice" hidden><button id="choose-file" class="secondary">保存先を選ぶ</button><p id="chosen-file" class="meta">未選択</p></div></fieldset>
-<p class="notice">録画は最大30分。停止後に保存する方式は、受信データ約256 MiBで自動停止します（最終データで超える場合あり）。</p><p class="meta">この作業タブを開いたままにしてください。保護された映像は録画できない場合があります。</p><button id="start-record" class="primary">録画を開始</button></div>
-<div class="record-stage"><video id="preview" class="preview" muted autoplay playsinline aria-label="録画対象のプレビュー"></video><div class="record-panel"><strong id="record-state" class="record-state">待機中</strong><p id="record-description">録画の設定を確認して開始してください。</p><div id="record-metrics" class="record-metrics">00:00 · 0 KiB</div><div class="record-actions"><button id="pause-record" class="secondary" hidden>一時停止</button><button id="stop-record" class="danger" hidden>録画を停止</button></div><p id="record-message" role="status" aria-live="polite"></p><div class="result-actions"><button id="save-record" class="primary" hidden>録画をファイルに保存</button><button id="discard-record" class="secondary" hidden>録画データを破棄</button></div></div></div></div></section>
-
-</main><script type="module" src="workspace.js"></script></body></html>
+<html lang="ja">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>VideoHarbor</title><link rel="stylesheet" href="workspace.css"></head>
+<body><main class="shell">
+  <header class="topbar">
+    <div class="brand"><span class="brand-icon"><svg class="icon" aria-hidden="true"><use href="icons.svg#play"></use></svg></span><h1>VideoHarbor</h1></div>
+    <button id="scan" class="secondary"><svg class="icon" aria-hidden="true"><use href="icons.svg#refresh"></use></svg>再スキャン</button>
+  </header>
+  <div class="source-line"><div class="source-info"><span class="source-caption">取得元</span><strong id="source-title">読み込み中…</strong><span id="source-domain"></span></div><button id="source" class="text-button" aria-label="元ページを開く"><span>元ページ</span><svg class="icon" aria-hidden="true"><use href="icons.svg#external"></use></svg></button></div>
+  <p id="message" class="scan-status" role="status" aria-live="polite">ページを確認しています。</p>
+  <p id="error" class="error" role="alert" hidden></p><div id="notices" class="notice" hidden></div>
+  <nav class="tabs" role="tablist" aria-label="保存方法">
+    <button id="download-tab" role="tab" aria-selected="true" aria-controls="download-view"><svg class="icon" aria-hidden="true"><use href="icons.svg#download"></use></svg>動画を保存</button>
+    <button id="record-tab" role="tab" aria-selected="false" aria-controls="record-view" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="icons.svg#record"></use></svg>画面を録画</button>
+  </nav>
+  <section id="download-view" class="view" role="tabpanel" aria-labelledby="download-tab">
+    <div class="section-heading"><div><h2 tabindex="-1" id="download-heading">動画を選んで保存</h2><p>元の動画ファイルを、そのまま。</p></div><span id="count" class="count"></span></div>
+    <div id="direct-list" class="video-list"></div>
+    <div id="empty" class="empty" hidden><span class="empty-icon"><svg class="icon" aria-hidden="true"><use href="icons.svg#file"></use></svg></span><h3>保存できる動画が見つかりません</h3><p>元ページで動画を再生して、もう一度探せます。</p><div class="actions"><button id="empty-scan" class="secondary"><svg class="icon" aria-hidden="true"><use href="icons.svg#refresh"></use></svg>もう一度探す</button><button id="empty-record" class="primary"><svg class="icon" aria-hidden="true"><use href="icons.svg#record"></use></svg>録画へ</button></div></div>
+    <details id="unsupported" class="disclosure" hidden><summary>直接保存できない候補 <span id="unsupported-count" class="count"></span></summary><p class="hint">ストリーミングなどは録画を試せます。保護された映像は録画できない場合があります。</p><div id="unsupported-list" class="video-list"></div></details>
+    <div id="record-fallback" class="record-fallback"><span>保存したい動画がないときは</span><button id="try-record" class="text-button">録画を試す<svg class="icon" aria-hidden="true"><use href="icons.svg#arrow"></use></svg></button></div>
+    <footer class="footer" id="download-footer" hidden><p id="batch" role="status" aria-live="polite"></p><div class="actions"><button id="cancel" class="secondary" hidden>保存を停止</button><button id="retry" class="secondary" hidden>中断分を再試行</button></div></footer>
+  </section>
+  <section id="record-view" class="view" role="tabpanel" aria-labelledby="record-tab" hidden>
+    <div class="section-heading"><div><h2 tabindex="-1" id="record-heading">画面の続きを、残す</h2><p>選んだタブ・画面全体を、再生時間ぶん録画します。</p></div><span class="format-chip">WebM</span></div>
+    <div class="record-layout">
+      <div id="record-settings" class="record-settings">
+        <fieldset id="record-options">
+          <legend>録画する対象</legend>
+          <div class="target-options">
+            <label class="target-option"><input type="radio" name="record-mode" value="tab" checked><svg class="icon" aria-hidden="true"><use href="icons.svg#tab"></use></svg><span>元のタブ</span></label>
+            <label class="target-option"><input type="radio" name="record-mode" value="display"><svg class="icon" aria-hidden="true"><use href="icons.svg#screen"></use></svg><span>画面・ウィンドウ</span></label>
+          </div>
+          <p id="target-hint" class="hint">元のタブを録画します。</p>
+          <div class="audio-option"><label class="switch-label" for="record-audio"><svg class="icon" aria-hidden="true"><use href="icons.svg#sound"></use></svg><span>音声を含める</span><input id="record-audio" class="switch" type="checkbox" checked></label><p class="hint">マイクは使いません。音声の可否は対象・OSによります。</p></div>
+          <details class="disclosure output-settings"><summary>保存方法 <span id="output-summary">停止後に保存</span></summary><label class="field" for="record-output">保存のタイミング</label><select id="record-output"><option value="memory">停止後にファイルへ保存</option><option value="file">ファイルへ順次保存</option></select><p class="hint">順次保存は録画中から書き込みます。保存先は開始前に選びます。</p></details>
+          <div id="file-choice" hidden><button id="choose-file" class="secondary"><svg class="icon" aria-hidden="true"><use href="icons.svg#file"></use></svg>保存先を選ぶ</button><p id="chosen-file" class="hint">未選択</p></div>
+        </fieldset>
+        <div class="start-area"><p id="record-limit" class="limit-note">最大30分 · 約256 MiBで自動停止</p><p class="keep-open"><svg class="icon" aria-hidden="true"><use href="icons.svg#info"></use></svg>この作業タブを閉じないでください</p><button id="start-record" class="primary"><span class="record-dot" aria-hidden="true"></span>録画を開始</button></div>
+        <details class="disclosure recording-help"><summary>録画について</summary><p>形式はWebMです。保護された映像は録画できない場合があります。共有ダイアログでは別のタブも選べます。</p><p>停止後に保存する方式は受信データ約256 MiBで自動停止します。最終データにより超える場合があります。順次保存も最大30分で停止します。</p></details>
+      </div>
+      <div class="record-stage">
+        <div id="preview-stage" class="preview-stage" data-phase="idle"><video id="preview" class="preview" muted autoplay playsinline aria-label="録画対象のプレビュー" hidden></video><div id="preview-placeholder" class="preview-placeholder"><span class="stage-illustration"><svg id="stage-icon" class="icon" aria-hidden="true"><use href="icons.svg#screen"></use></svg></span><strong id="stage-title">録画の準備</strong><p id="stage-hint">元のタブを録画します。</p></div><span id="live-badge" class="live-badge" hidden><span class="record-dot" aria-hidden="true"></span><span id="live-label">録画中</span></span></div>
+        <div id="record-panel" class="record-panel" data-state="idle"><div class="record-panel-heading"><strong id="record-state" tabindex="-1">待機中</strong><div id="record-metrics" class="record-metrics" hidden><span id="record-time">00:00</span><span id="record-size">0 KiB</span></div></div><p id="record-description" class="hint" hidden></p><div class="record-actions"><button id="pause-record" class="secondary" hidden>一時停止</button><button id="stop-record" class="danger" hidden><svg class="icon" aria-hidden="true"><use href="icons.svg#stop"></use></svg>録画を停止</button></div><p id="record-message" role="status" aria-live="polite" hidden></p><div class="result-actions"><button id="save-record" class="primary" hidden><svg class="icon" aria-hidden="true"><use href="icons.svg#download"></use></svg>録画をファイルに保存</button><button id="discard-record" class="secondary" hidden>録画データを破棄</button></div></div>
+      </div>
+    </div>
+  </section>
+</main><script type="module" src="workspace.js"></script></body>
+</html>
