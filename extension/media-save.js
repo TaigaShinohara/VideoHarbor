@@ -1,7 +1,7 @@
 import { prepareHLS } from './hls.js';
 import { prepareDASH } from './dash.js';
 import { assembleStream } from './stream-assembly.js';
-import { remuxTSToMP4 } from './ts-to-mp4.js';
+import { MediaProcessor } from './media-processing.js';
 import { validateOutputFormat } from './output-format.js';
 import { sanitizePart, fileLabel, publicError } from './utils.js';
 
@@ -17,9 +17,10 @@ class SitePermissionError extends Error {
 
 // All assembled data lives in this workspace, not the suspendable service worker.
 export class MediaSaver {
-  constructor({onUpdate=()=>{},readBlob}) {
+  constructor({onUpdate=()=>{},readBlob,processorFactory=options=>new MediaProcessor(options)}) {
     this.onUpdate=onUpdate;this.readBlob=readBlob;this.results=new Map();this.busy=false;
     this.current=null;this.controller=null;this.downloadId=null;
+    this.processorFactory=processorFactory;this.operation=null;this.disposed=false;
   }
   emit() {this.onUpdate();}
   status(url) {return this.results.get(url);}
@@ -40,7 +41,7 @@ export class MediaSaver {
   }
   // Invoke directly from a click. permissions.request must happen before the first await.
   start(item,title,outputFormat='auto') {
-    if(this.busy)return Promise.resolve();
+    if(this.busy || this.disposed)return Promise.resolve();
     validateOutputFormat(item,outputFormat);
     const previous=this.results.get(item.url);
     const permission=previous?.origins?.length ? chrome.permissions.request({origins:previous.origins}) : Promise.resolve(true);
@@ -51,17 +52,19 @@ export class MediaSaver {
       if(this.results.size<100)break;
       if(url!==item.url && !result.blob)this.results.delete(url);
     }
-    this.busy=true;this.current=item.url;this.controller=new AbortController();
-    return this.run(item,title,permission,previous,outputFormat);
+    const operation={controller:new AbortController(),processor:null,downloadId:null};
+    this.operation=operation;this.busy=true;this.current=item.url;this.controller=operation.controller;
+    return this.run(item,title,permission,previous,outputFormat,operation);
   }
-  async run(item,title,permission,previous,outputFormat) {
+  async run(item,title,permission,previous,outputFormat,operation) {
     let objectURL,blobToken;
     const sameFormat=previous?.outputFormat===outputFormat;
     const result={status:'preparing',message:'動画の配信情報を確認しています。',bytesReceived:0,outputFormat,audioUnverified:sameFormat && Boolean(previous?.audioUnverified)};
     this.results.set(item.url,result);this.emit();
     try {
       if(!await permission)throw new Error('配信元へのアクセスは許可されませんでした。もう一度「保存」から試せます。');
-      const signal=this.controller.signal;
+      const signal=operation.controller.signal;
+      const processor=()=>operation.processor ||= this.processorFactory({signal});
       signal.throwIfAborted();
       let blob=sameFormat ? previous?.blob : null, extension=sameFormat ? previous?.extension : undefined;
       if(!blob && ['hls','dash'].includes(item.type)) {
@@ -70,8 +73,8 @@ export class MediaSaver {
         if(missing.length)throw new SitePermissionError(missing);
         result.audioUnverified=!plan.fromMaster;
         result.status='fetching';result.message=result.audioUnverified ? '単独のHLSリストを取得中。別配信の音声を判別できないため、音声を含まない場合があります。' : plan.tracks?.length===2 ? '映像と音声を取得して、MP4へまとめています。' : '分割された動画を取得しています。';this.emit();
-        blob=await assembleStream(plan,this.fetchResource.bind(this),{signal,onProgress:progress=>{
-          Object.assign(result,progress);this.emit();
+        blob=await assembleStream(plan,this.fetchResource.bind(this),{signal,processor:processor(),onProgress:progress=>{
+          if(this.operation===operation && !signal.aborted){Object.assign(result,progress);this.emit();}
         }});
         extension=plan.extension;
       } else if(!blob && item.type==='blob') {
@@ -94,19 +97,21 @@ export class MediaSaver {
       if(outputFormat==='mp4' && extension==='ts') {
         result.status='converting';result.message='映像と音声を保ってMP4へまとめ直しています。';this.emit();
         const bytes=new Uint8Array(await blob.arrayBuffer());signal.throwIfAborted();
-        blob=remuxTSToMP4(bytes);signal.throwIfAborted();extension='mp4';
+        blob=await processor().remux(bytes);signal.throwIfAborted();extension='mp4';
       }
       if(outputFormat==='mp4' && extension!=='mp4')throw new Error('この形式のMP4変換には未対応です。「元の形式」を選んでください。');
       Object.assign(result,{blob,extension,status:'saving',message:'ファイルへ保存しています。',bytesReceived:blob.size});this.emit();
+      signal.throwIfAborted();
       objectURL=URL.createObjectURL(blob);
       const stem=sanitizePart(fileLabel(item.url).replace(/\.[a-z0-9]{2,5}$/i,''),'video');
-      this.downloadId=await chrome.downloads.download({url:objectURL,filename:`VideoHarbor/${sanitizePart(title)}/${stem}.${extension}`,conflictAction:'uniquify',saveAs:false});
-      result.downloadId=this.downloadId;
+      operation.downloadId=await chrome.downloads.download({url:objectURL,filename:`VideoHarbor/${sanitizePart(title)}/${stem}.${extension}`,conflictAction:'uniquify',saveAs:false});
+      if(this.operation===operation)this.downloadId=operation.downloadId;
+      result.downloadId=operation.downloadId;
       // The user may cancel while Chrome is accepting the download.
-      if(signal.aborted)await chrome.downloads.cancel(this.downloadId).catch(()=>{});
-      await this.waitForDownload(this.downloadId);
+      if(signal.aborted)await chrome.downloads.cancel(operation.downloadId).catch(()=>{});
+      await this.waitForDownload(operation.downloadId);
       try {
-        const [saved]=await chrome.downloads.search({id:this.downloadId});
+        const [saved]=await chrome.downloads.search({id:operation.downloadId});
         if(saved?.filename)result.filename=saved.filename;
         if(typeof saved?.exists==='boolean')result.exists=saved.exists;
       } catch { /* The confirmed completion remains valid if its optional location is unavailable. */ }
@@ -114,12 +119,12 @@ export class MediaSaver {
     } catch(error) {
       result.status=error.origins ? 'permission' : 'interrupted';
       result.origins=error.origins;
-      result.message=this.controller.signal.aborted ? '保存を停止しました。' : publicError(error);
+      result.message=operation.controller.signal.aborted ? '保存を停止しました。' : publicError(error);
     } finally {
-      this.controller.abort();
+      operation.controller.abort();operation.processor?.close();
       if(blobToken)await this.readBlob(item.url,-2,blobToken).catch(()=>{});
       if(objectURL)URL.revokeObjectURL(objectURL);
-      this.busy=false;this.current=null;this.downloadId=null;this.controller=null;this.emit();
+      if(this.operation===operation){this.operation=null;this.busy=false;this.current=null;this.downloadId=null;this.controller=null;this.emit();}
     }
   }
   waitForDownload(id) {
@@ -139,5 +144,10 @@ export class MediaSaver {
       const timer=setInterval(check,500);chrome.downloads.onChanged.addListener(changed);void check();
     });
   }
-  cancel() {this.controller?.abort();if(this.downloadId!==null)void chrome.downloads.cancel(this.downloadId).catch(()=>{});}
+  cancel() {
+    const operation=this.operation;if(!operation)return;
+    operation.controller.abort();operation.processor?.close();
+    if(operation.downloadId!==null)void chrome.downloads.cancel(operation.downloadId).catch(()=>{});
+  }
+  dispose() {this.disposed=true;this.cancel();}
 }

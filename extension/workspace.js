@@ -15,6 +15,7 @@ let initialRecorderMessage = '', previousRecordingPhase = '';
 const handledCompletions = new Set();
 const formatSelections=new Map();
 const mediaSaver=new MediaSaver({onUpdate:updateMediaUI,readBlob:(url,offset,token)=>send('blob-read',{url,offset,token})});
+window.addEventListener('pagehide',()=>mediaSaver.dispose());
 async function send(type, extra = {}) {
   const response = await chrome.runtime.sendMessage({type, sessionId, instance, ...extra});
   if (!response?.ok) throw new Error(response?.error || '拡張の接続が切れました。作業タブを開き直してください。');
