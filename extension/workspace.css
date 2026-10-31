@@ -187,6 +187,10 @@ select { width: 100%; min-height: 42px; border: 1px solid #c6d4cb; border-radius
 
 /* Recorder actions remain in the viewport while the source or preview scrolls. */
 body.recording-active { padding-bottom: 285px; }
+body.media-saving { padding-bottom: 200px; }
+.media-saving #media-panel { position: fixed; z-index: 20; left: 24px; right: 24px; bottom: 16px; max-width: 1036px; max-height: calc(100dvh - 32px); margin: 0 auto; overflow: auto; border: 1px solid var(--accent-line); border-radius: 13px; padding: 16px 18px; background: var(--paper); box-shadow: 0 8px 35px #1d473421; }
+#media-status { flex: 1 1 220px; font-size: .85rem; }
+#media-progress { color: var(--muted); font-size: .78rem; }
 .recording-active .preview-stage { max-height: 560px; }
 .recording-active .record-panel { position: fixed; z-index: 20; left: 24px; right: 24px; bottom: 16px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 8px 22px; max-width: 1036px; max-height: min(420px, calc(100dvh - 32px)); margin: 0 auto; overflow: auto; border-color: var(--accent-line); padding: 16px 18px; box-shadow: 0 8px 35px #1d473421; }
 .recording-active .record-panel-heading { grid-column: 1; grid-row: 1; justify-content: flex-start; }

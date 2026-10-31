@@ -1,5 +1,6 @@
 import { fileLabel, extensionOf, matchesImage, summarizeJobs, formatBytes, publicError } from './utils.js';
 import { RecorderController } from './recorder.js';
+import { MediaSaver, originPattern } from './media-save.js';
 const KIND = 'videos';
 const $ = id => document.getElementById(id);
 const sessionId = new URL(location.href).searchParams.get('id');
@@ -8,6 +9,7 @@ let state, selected = new Set(), visible = [], loading = false, requestPending =
 let recorder = null;
 let initialRecorderMessage = '', previousRecordingPhase = '';
 const handledCompletions = new Set();
+const mediaSaver=new MediaSaver({onUpdate:updateMediaUI,readBlob:(url,offset,token)=>send('blob-read',{url,offset,token})});
 async function send(type, extra = {}) {
   const response = await chrome.runtime.sendMessage({type, sessionId, instance, ...extra});
   if (!response?.ok) throw new Error(response?.error || '拡張の接続が切れました。作業タブを開き直してください。');
@@ -22,10 +24,11 @@ function icon(name) {
   const use=document.createElementNS('http://www.w3.org/2000/svg','use');
   use.setAttribute('href',`icons.svg#${name}`);svg.append(use);return svg;
 }
-function isBusy() { return loading || requestPending || (state && summarizeJobs(state.jobs).active > 0); }
-function jobFor(url) { return state.jobs.find(job=>job.url===url) || state.history?.find(job=>job.url===url); }
+function isBusy() { return loading || requestPending || mediaSaver.busy || (state && summarizeJobs(state.jobs).active > 0); }
+function jobFor(url) { return mediaSaver.status(url) || state.jobs.find(job=>job.url===url) || state.history?.find(job=>job.url===url); }
 function jobLabel(job) {
   if (!job) return '';
+  if(job.message)return job.message+(job.status==='fetching' ? ` · ${formatBytes(job.bytesReceived)}` : '');
   if (job.status === 'complete') return '保存完了';
   if (job.status === 'interrupted') return `中断 · ${job.error || '再試行できます'}`;
   if (job.status === 'queued') return '順番待ち';
@@ -44,7 +47,7 @@ function applyState(next) {
 }
 function updateSummary() {
   if(!state) return;
-  const batch=summarizeJobs(state.jobs), busy=isBusy();
+  const batch=summarizeJobs(state.jobs), busy=isBusy() || Boolean(recorder?.busy);
   $('scan').disabled=busy || Boolean(recorder?.busy);
   document.body.classList.toggle('scanning',loading);
   $('empty-scan').disabled=busy || Boolean(recorder?.busy);
@@ -53,7 +56,7 @@ function updateSummary() {
   if($('batch').textContent!==batchText)$('batch').textContent=batchText;
   $('cancel').hidden=!batch.active;
   $('retry').hidden=!batch.interrupted || batch.active > 0;
-  $('retry').disabled=requestPending;
+  $('retry').disabled=busy;
   if(KIND === 'images') {
     const visibleURLs=new Set(visible.map(i=>i.url));
     const hidden=[...selected].filter(url=>!visibleURLs.has(url)).length;
@@ -63,7 +66,31 @@ function updateSummary() {
     $('select-visible').disabled=busy || !visible.length;
     $('clear').disabled=busy || !selected.size;
     for(const el of document.querySelectorAll('.image-select')) el.disabled=busy;
-  } else for(const el of document.querySelectorAll('.direct-save')) el.disabled=busy;
+  } else for(const el of document.querySelectorAll('.direct-save,.media-save,.frame-permission')) el.disabled=busy;
+  $('record-tab').disabled=mediaSaver.busy;
+}
+function updateMediaUI() {
+  if(!state)return;
+  updateSummary();
+  const current=mediaSaver.current && mediaSaver.status(mediaSaver.current);
+  document.body.classList.toggle('media-saving',mediaSaver.busy);
+  $('media-panel').hidden=!mediaSaver.busy;
+  if(current) {
+    $('media-status').textContent=current.message;
+    $('media-progress').textContent=formatBytes(current.bytesReceived)+(current.total ? ` · ${current.completed || 0}/${current.total}区間` : '');
+  }
+  for(const el of document.querySelectorAll('.item-status')) {
+    const job=jobFor(el.dataset.url);el.textContent=jobLabel(job);el.dataset.state=job?.status || '';
+  }
+  for(const el of document.querySelectorAll('.media-save')) {
+    const job=mediaSaver.status(el.dataset.url);
+    el.textContent=job?.status==='permission' ? '配信元を許可して保存' : job?.blob ? 'ファイル保存を再試行' : '保存';
+    el.setAttribute('aria-label',`${fileLabel(el.dataset.url)}${job?.status==='permission' ? 'の配信元を許可して保存' : 'を保存'}`);
+  }
+  for(const el of document.querySelectorAll('.permission-sites')) {
+    const origins=mediaSaver.status(el.dataset.url)?.origins;
+    el.hidden=!origins?.length;el.textContent=origins?.length ? `アクセスを求めるサイト: ${origins.join('、')}` : '';
+  }
 }
 function renderImages() {
   const filters={query:$('query').value,width:Math.max(0,Number($('width').value)||0),height:Math.max(0,Number($('height').value)||0),type:$('type').value};
@@ -91,6 +118,7 @@ function renderImages() {
   updateSummary();
 }
 function showView(view, focus=true) {
+  if(view==='record' && mediaSaver.busy){error(new Error('動画の保存が終わってから録画を開始してください。'));return;}
   if(view !== 'record' && recorder?.busy) { error(new Error('録画・保存中はこの画面で停止と状態を確認してください。')); return; }
   const record=view === 'record';
   $('download-view').hidden=record;$('record-view').hidden=!record;
@@ -99,26 +127,53 @@ function showView(view, focus=true) {
   if(focus) $(record ? 'record-heading' : 'download-heading').focus();
 }
 function renderVideos() {
-  const direct=state.items.filter(i=>i.type === 'direct'), other=state.items.filter(i=>i.type !== 'direct');
+  const supported=item=>['direct','hls','blob'].includes(item.type);
+  const direct=state.items.filter(supported), other=state.items.filter(i=>!supported(i));
   $('count').textContent=`${direct.length}件の動画`;
   $('direct-list').replaceChildren();$('unsupported-list').replaceChildren();
   for(const item of [...direct,...other]) {
     const card=element('article','video-card'), info=element('div','video-info');
-    const format=item.type==='direct' ? extensionOf(item.url,'videos').toUpperCase() : item.type.toUpperCase();
+    const format=item.type==='direct' ? extensionOf(item.url,'videos').toUpperCase() : item.type==='blob' ? 'ページ内動画' : item.type.toUpperCase();
     const fileIcon=element('div','file-icon');fileIcon.setAttribute('aria-hidden','true');fileIcon.append(icon('file'),element('span','',format));
     info.append(element('h3','file-name',fileLabel(item.url)));
     let host='ページ内データ';try{host=new URL(item.url).hostname || host;}catch{}
     info.append(element('p','meta',`${format} · ${host}${item.width && item.height ? ` · ${item.width} × ${item.height}` : ''}`), statusElement(item));
     const details=element('details','url-detail'), summary=element('summary','','詳細');
     details.append(summary,element('p','meta',item.url.length>500 ? item.url.slice(0,500)+'…' : item.url));info.append(details);
-    const button=element('button',item.type==='direct' ? 'primary direct-save' : 'secondary');
-    button.append(icon(item.type==='direct' ? 'download' : 'record'),document.createTextNode(item.type==='direct' ? '保存' : '録画へ'));
-    button.setAttribute('aria-label',`${fileLabel(item.url)}${item.type==='direct' ? 'を保存' : 'の録画設定へ'}`);
-    button.addEventListener('click',()=>item.type==='direct' ? saveURLs([item.url]) : showView('record'));
-    card.append(fileIcon,info,button);$(item.type==='direct' ? 'direct-list' : 'unsupported-list').append(card);
+    const sites=element('p','hint permission-sites');sites.dataset.url=item.url;sites.hidden=true;info.append(sites);
+    if(item.type==='hls')info.append(element('p','hint','HLSをファイルにまとめて保存 · 最大256 MiB'));
+    if(item.type==='blob')info.append(element('p','hint','元ファイル型のページ内動画を取得 · 分割再生用blobは未対応'));
+    const button=element('button',supported(item) ? `primary ${item.type==='direct' ? 'direct-save' : 'media-save'}` : 'secondary');
+    button.dataset.url=item.url;
+    button.append(icon(supported(item) ? 'download' : 'record'),document.createTextNode(supported(item) ? '保存' : '録画へ'));
+    button.setAttribute('aria-label',`${fileLabel(item.url)}${supported(item) ? 'を保存' : 'の録画設定へ'}`);
+    button.addEventListener('click',()=>{
+      if(item.type==='direct')return saveURLs([item.url]);
+      if(!supported(item))return showView('record');
+      if(isBusy() || recorder?.busy)return;
+      void mediaSaver.start(item,state.title).catch(error);
+    });
+    card.append(fileIcon,info,button);$(supported(item) ? 'direct-list' : 'unsupported-list').append(card);
   }
   $('empty').hidden=direct.length>0;$('record-fallback').hidden=!direct.length;
-  $('unsupported').hidden=!other.length;$('unsupported-count').textContent=`(${other.length}件)`;updateSummary();
+  $('unsupported').hidden=!other.length;$('unsupported-count').textContent=`(${other.length}件)`;
+  $('frame-sites').replaceChildren();
+  const frameOrigins=[...new Set((state.frames || []).map(f=>originPattern(f.url)))];
+  $('frame-access').hidden=!frameOrigins.length;
+  for(const origin of frameOrigins) {
+    const button=element('button','secondary frame-permission',`${new URL(origin).hostname} を許可して探す`);
+    button.addEventListener('click',()=>{
+      // Request in the click before awaiting or messaging the worker.
+      const permission=chrome.permissions.request({origins:[origin]});
+      requestPending=true;updateSummary();
+      permission.then(async granted=>{
+        if(!granted)throw new Error('埋め込みサイトへのアクセスは許可されませんでした。');
+        requestPending=false;await scan();
+      }).catch(error).finally(()=>{requestPending=false;updateSummary();});
+    });
+    $('frame-sites').append(button);
+  }
+  updateMediaUI();
 }
 async function scan() {
   if(isBusy() || recorder?.busy) return;
@@ -141,7 +196,7 @@ async function saveURLs(urls) {
   try{applyState(await send('save',{urls}));}catch(e){error(e);}finally{requestPending=false;updateSummary();}
 }
 async function jobAction(type) {
-  if(requestPending) return;requestPending=true;clearError();updateSummary();
+  if(requestPending || mediaSaver.busy || recorder?.busy) return;requestPending=true;clearError();updateSummary();
   try{applyState(await send(type));}catch(e){error(e);}finally{requestPending=false;updateSummary();}
 }
 function setupRecording() {
@@ -162,6 +217,7 @@ function setupRecording() {
   for(const input of document.querySelectorAll('[name="record-mode"]'))input.addEventListener('change',()=>updateRecording(recorder.snapshot()));
   $('choose-file').addEventListener('click',()=>recorder.chooseFile().catch(error));
   $('start-record').addEventListener('click',()=> {
+    if(mediaSaver.busy)return;
     clearError();
     // start() must reach getDisplayMedia before yielding user activation.
     recorder.start(document.querySelector('[name="record-mode"]:checked').value,$('record-audio').checked,$('record-output').value).catch(error);
@@ -171,7 +227,7 @@ function setupRecording() {
   $('save-record').addEventListener('click',()=>recorder.save().catch(error));
   $('discard-record').addEventListener('click',()=>{if(confirm('この作業タブ内の録画データを破棄しますか？保存済みのファイルは残ります。')) recorder.discard();});
   chrome.tabs.onRemoved.addListener(tabId=>{if(tabId===state.tabId && recorder.snapshot().method==='tab' && recorder.busy) recorder.stop().catch(error);});
-  window.addEventListener('beforeunload',e=>{const s=recorder.snapshot();if(recorder.busy || (s.resultReady && !s.resultSaved)){e.preventDefault();e.returnValue='';}});
+  window.addEventListener('beforeunload',e=>{const s=recorder.snapshot();if(mediaSaver.busy || [...mediaSaver.results.values()].some(r=>r.blob) || recorder.busy || (s.resultReady && !s.resultSaved)){e.preventDefault();e.returnValue='';}});
   updateRecording(recorder.snapshot());
 }
 function updateRecording(s) {
@@ -224,6 +280,7 @@ function updateRecording(s) {
 }
 $('source').addEventListener('click',()=>send('source').catch(error));$('scan').addEventListener('click',scan);
 $('retry').addEventListener('click',()=>jobAction('retry'));$('cancel').addEventListener('click',()=>jobAction('cancel'));
+$('media-cancel').addEventListener('click',()=>mediaSaver.cancel());
 if(KIND === 'images') {
   for(const id of ['query','width','height','type']) $(id).addEventListener('input',()=>{if(state)renderImages();});
   $('select-visible').addEventListener('click',()=>{for(const i of visible)selected.add(i.url);renderImages();});

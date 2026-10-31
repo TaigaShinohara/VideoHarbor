@@ -1,5 +1,22 @@
 # QA — v0.1
 
+## 埋め込み動画の保存拡張 — 2026-10-31 / v0.2.0
+
+- `npm test`: 67件PASS、失敗・SKIPなし。動画タグ・遅延属性・メタデータ・構造化データ・型付きJSON設定、危険URL排除、候補上限、再スキャンの型保持を確認。
+- HLSの単体試験20件：マスターの対応画質選択、相対URL、TS/fMP4、初期化データ、明示/暗黙byte rangeと厳密な206応答、暗号化・ライブ・別音声・不連続・循環・過大データ・HTML応答等の拒否、AbortSignal、未読応答の解放を確認。
+- 保存controllerとページ内blobの単体試験18件：クリック内の同期permission request、拒否/再試行、配信元限定、実download完了待ち、準備/取得/保存中停止と完了競合、単一の再試行buffer、snapshotの再利用・操作token・期限・解放、サイズ/形式/署名検査を確認。
+- `npm run check`: MV3、必須権限、サイト許可がoptionalであること、ローカル参照、構文PASS。`git diff --check`: PASS。
+- `npm run test:browser`: 既存の隔離Chrome合成試験PASS。直接保存、録画、未保存/保存済み、キャンセル、worker再起動、キーボード、狭幅の既存動作を確認。
+- `npm run test:embedded`: 追加の隔離Chrome／localhost合成試験PASS。動画遅延属性・OGメタデータ・JSON-LD・同サイトiframeを取得。別サイトのiframeは未許可時に取得せず、テストコピーにそのホストだけ付与した別profileでは実allFrames注入で取得できた。
+- 同追加試験で、ローカルffmpegが生成した4秒の映像＋音声付きHLSを、本物の拡張fetch→HLS組立→ChromeダウンロードでTSとfMP4へ実保存。実Chrome downloadのcomplete/exists/filenameを確認後、ffprobeで形式・両track・長さを確認し、ffmpegの`-xerror -err_detect explode`で両trackを全編デコードして終了コード0。元ページで生成したMP4 Blobも同経路で転送・実保存・全編デコード成功。MSE用blobは理由を表示しダウンロードを開始しない。
+- 同追加試験でHLS区間の応答を遅延させ、360×800で候補一覧を別位置へスクロールしても固定の停止ボタンがviewport内にあること、停止後は中断表示になり新しいdownloadや部分ファイルを保存しないことを確認。
+- サイト許可の拒否/再試行とrequest時userActivationは、permissions APIの確認境界だけを差し替えて確認。fetch・collector・HLS組立・blob転送・実downloadは差し替えていない。配布manifestは必須host権限なし。テストコピーだけに必要なlocalhostホストを付与し、ワイルドカードhostを実付与していない。個人プロファイルや通常Chromeには触れていない。
+- 最初の追加試験は、拡張起点downloadとPlaywrightのartifactコピーが競合してENOENT。Chrome自身のdownload ID・実状態・ファイル名で確認する方式へ試験を修正し、再実行でPASS。製品の保存失敗とは区別する。
+
+未確認：ネイティブの追加サイト権限ダイアログの本人操作、実サイトでの改修後追試・サイト別の認証/Referer/期限付きURL/リダイレクト互換性、最大容量や長時間の実測、本人の新しい保存操作の理解、実OS picker/音声/スクリーンリーダー。DASH、暗号化・ライブ・映像音声別配信HLS、任意のMSE分割配信、DRM回避、変換は未対応。合成試験を全サイト対応・人間の体験・Chrome116実機確認と混同しない。
+
+本人確認手順：`chrome://extensions`でVideoHarborを再読み込みし、元ページで動画を再生→拡張を開く→「動画を保存」→必要なら具体的な埋め込み/配信元サイトだけ許可→保存。HLS/blob処理中は作業タブを閉じず、TSは対応プレーヤーで確認する。
+
 以下の実施結果と、未実施の手順を区別します。
 
 ## UX整理の実施結果 — 2026-10-31

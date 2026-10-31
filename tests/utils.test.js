@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {sanitizePart,mediaType,allowedURL,extensionOf,fileLabel,downloadName,matchesImage,mergeItems,summarizeJobs,publicError} from '../extension/utils.js';
+import {sanitizePart,mediaType,mediaKind,allowedURL,extensionOf,fileLabel,downloadName,matchesImage,mergeItems,summarizeJobs,publicError} from '../extension/utils.js';
 test('filenames stay inside chosen download folder',()=>{
   assert.equal(sanitizePart('../../bad\\name:*'),'_.._bad_name__');
   assert.equal(sanitizePart('..'),'untitled');
@@ -10,7 +10,7 @@ test('filenames stay inside chosen download folder',()=>{
   assert.ok(name.endsWith('.png'));assert.ok(!name.split('/').some(p=>p==='..'));
 });
 test('reject executable and credential-bearing URLs',()=>{
-  for(const url of ['javascript:alert(1)','file:///tmp/a.png','https://u:p@example.test/image.png','data:text/html,test'])assert.equal(allowedURL(url,'images'),false);
+  for(const url of ['javascript:alert(1)','file:///tmp/a.png','https://u:p@example.test/image.png','data:text/html,test','https://*/image.png','https://*.cdn.test/image.png'])assert.equal(allowedURL(url,'images'),false);
   assert.equal(allowedURL('https://example.test/image?id=1','images'),true);
   assert.equal(allowedURL('data:image/png;base64,AA==','images'),true);
   assert.equal(allowedURL('data:image/png;base64,AA==','videos'),false);
@@ -31,6 +31,15 @@ test('query strings remain part of identity and do not affect suffixes',()=>{
   assert.equal(fileLabel('https://a.test/photo%20one.jpg?secret=value'),'photo one.jpg');
   assert.equal(extensionOf('https://a.test/endpoint?file=movie.mp4','videos'),'video');
 });
+test('specific media kinds distinguish HLS, DASH and actual blob URLs',()=>{
+  assert.equal(mediaKind('https://a.test/master.m3u8?auth=synthetic'),'hls');
+  assert.equal(mediaKind('https://a.test/manifest','application/vnd.apple.mpegurl'),'hls');
+  assert.equal(mediaKind('https://a.test/manifest.mpd'),'dash');
+  assert.equal(mediaKind('https://a.test/manifest','application/dash+xml'),'dash');
+  assert.equal(mediaKind('blob:https://a.test/uuid','video/mp4'),'blob');
+  assert.equal(mediaKind('https://a.test/video','video/mp4'),'direct');
+  assert.equal(mediaKind('https://a.test/watch'),'unknown');
+});
 test('unknown dimensions are excluded only when requested',()=>{
   const item={url:'https://a.test/photo.png',alt:'海',width:0,height:0};
   assert.ok(matchesImage(item,{}));assert.ok(!matchesImage(item,{width:100}));
@@ -44,6 +53,12 @@ test('rescan merges URLs, retains records, and adds variants',()=>{
 });
 test('accepted and queued downloads are not completed',()=>{
   assert.deepEqual(summarizeJobs([{status:'queued'},{status:'in_progress'},{status:'complete'},{status:'interrupted'}]),{total:4,complete:1,interrupted:1,active:2});
+});
+test('rescans retain stronger video metadata when only a weak resource hint remains',()=>{
+  const merged = mergeItems([{url:'https://a.test/clip',source:'video',mime:'video/mp4',width:1920,height:1080,mediaHint:true}],
+    [{url:'https://a.test/clip',source:'loaded-resource',mime:'',width:0,height:0,mediaHint:false}]);
+  assert.equal(merged[0].mime,'video/mp4');assert.equal(merged[0].source,'video');
+  assert.equal(merged[0].width,1920);assert.equal(merged[0].height,1080);assert.equal(merged[0].mediaHint,true);
 });
 test('public errors do not reproduce signed media URLs',()=>{
   const s=publicError(new Error('Failed https://example.test/media?secret=token'));

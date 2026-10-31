@@ -6,17 +6,21 @@ export function sanitizePart(value, fallback = 'untitled') {
   return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(safe) ? `_${safe}` : safe;
 }
 export function mediaType(url, mime = '') {
-  if (/mpegurl|dash\+xml/i.test(mime)) return 'stream';
+  const kind = mediaKind(url,mime);
+  return kind === 'hls' || kind === 'dash' ? 'stream' : kind;
+}
+export function mediaKind(url, mime = '') {
   let path = ''; try { path = new URL(url).pathname.toLowerCase(); } catch { return 'unknown'; }
-  if (/\.(m3u8|mpd)$/.test(path)) return 'stream';
   if (/^blob:/i.test(url)) return 'blob';
+  if (/\.m3u8$/.test(path) || /mpegurl/i.test(mime)) return 'hls';
+  if (/\.mpd$/.test(path) || /dash\+xml/i.test(mime)) return 'dash';
   if (/\.(mp4|webm|mov|m4v|ogv|ogg)$/.test(path) || /^video\//i.test(mime)) return 'direct';
   return 'unknown';
 }
 export function allowedURL(value, kind) {
   try {
     const u = new URL(value);
-    if (u.username || u.password) return false;
+    if (u.username || u.password || u.hostname.includes('*')) return false;
     if (u.protocol === 'http:' || u.protocol === 'https:') return true;
     return kind === 'images' && /^data:image\/(png|jpe?g|gif|webp|avif|svg\+xml|bmp|x-icon);/i.test(value)
       && value.length <= 131072;
@@ -54,7 +58,18 @@ export function matchesImage(item, filters) {
 }
 export function mergeItems(previous, incoming) {
   const map = new Map(previous.map(i => [i.url, i]));
-  for (const item of incoming) map.set(item.url, {...map.get(item.url), ...item});
+  const confidence = {video:5,'player-config':4,metadata:3,embed:3,'loaded-resource':2,link:1};
+  for (const item of incoming) {
+    const old = map.get(item.url);
+    const merged = {...old,...item};
+    if (old) {
+      for (const key of ['width','height']) if (key in old || key in item) merged[key] = Math.max(old[key] || 0,item[key] || 0);
+      if (old.mediaHint) merged.mediaHint = true;
+      if (old.mime && (!item.mime || (confidence[old.source] || 0) > (confidence[item.source] || 0))) merged.mime = old.mime;
+      if ((confidence[old.source] || 0) > (confidence[item.source] || 0)) merged.source = old.source;
+    }
+    map.set(item.url,merged);
+  }
   return [...map.values()];
 }
 export function summarizeJobs(jobs = []) {
