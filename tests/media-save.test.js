@@ -78,6 +78,7 @@ test('blob save waits for Chrome completion, releases its page snapshot and revo
   h.emit(42,'complete');await saving;
   assert.equal(h.saver.status(blobItem.url).status,'complete');
   assert.equal(h.saver.status(blobItem.url).blob,undefined);
+  assert.equal(h.saver.status(blobItem.url).downloadId,42,'the completed output can be found without inspecting unrelated downloads');
   assert.deepEqual(h.released,[token]);
   assert.equal(h.calls.filter(call=>call[0]==='revoke').length,1);
   assert.equal(h.listeners.size,0);

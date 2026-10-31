@@ -3,12 +3,14 @@ import { RecorderController } from './recorder.js';
 import { MediaSaver, originPattern } from './media-save.js';
 import { outputOptions, validateOutputFormat } from './output-format.js';
 import { renderVideoGroups } from './workspace-videos.js';
+import { RecordingResultView } from './workspace-result.js';
 const KIND = 'videos';
 const $ = id => document.getElementById(id);
 const sessionId = new URL(location.href).searchParams.get('id');
 const instance = crypto.randomUUID();
 let state, selected = new Set(), visible = [], loading = false, requestPending = false, pollRunning = false;
 let recorder = null;
+let recordingResultView = null;
 let initialRecorderMessage = '', previousRecordingPhase = '';
 const handledCompletions = new Set();
 const formatSelections=new Map();
@@ -48,6 +50,7 @@ function applyState(next) {
   updateSummary();
   for(const el of document.querySelectorAll('.item-status')) { const job=jobFor(el.dataset.url);el.textContent=jobLabel(job);el.dataset.state=job?.status || ''; }
   for(const checkbox of document.querySelectorAll('.image-select')) checkbox.checked=selected.has(checkbox.dataset.url);
+  updateOutputResults();
 }
 function updateSummary() {
   if(!state) return;
@@ -89,12 +92,56 @@ function updateMediaUI() {
   for(const el of document.querySelectorAll('.media-save')) {
     const job=mediaSaver.status(el.dataset.url);
     el.textContent=job?.status==='permission' ? '配信元を許可して保存' : job?.blob ? 'ファイル保存を再試行' : '保存';
-    el.setAttribute('aria-label',`${fileLabel(el.dataset.url)}${job?.status==='permission' ? 'の配信元を許可して保存' : 'を保存'}`);
+    el.setAttribute('aria-label',`${el.dataset.displayName || fileLabel(el.dataset.url)} · ${fileLabel(el.dataset.url)}${job?.status==='permission' ? 'の配信元を許可して保存' : 'を保存'}`);
   }
   for(const el of document.querySelectorAll('.permission-sites')) {
     const origins=mediaSaver.status(el.dataset.url)?.origins;
     el.hidden=!origins?.length;el.textContent=origins?.length ? `アクセスを求めるサイト: ${origins.join('、')}` : '';
   }
+  updateOutputResults();
+}
+function outputFolderButton(id) {
+  const button=element('button','secondary show-file','保存場所を表示');button.dataset.downloadId=String(id);
+  let pending=false;
+  button.addEventListener('click',async()=>{
+    if(pending)return;pending=true;button.setAttribute('aria-busy','true');
+    try{await send('show-download',{downloadId:id});}catch(e){error(e);}
+    finally{pending=false;button.removeAttribute('aria-busy');}
+  });
+  return button;
+}
+function outputName(job) {
+  const value=job.actualFilename || (job.extension ? job.filename : '');
+  return value ? String(value).split(/[\\/]/).at(-1) : '';
+}
+function updateOutputResults() {
+  if(!state)return;
+  for(const container of document.querySelectorAll('.candidate-result')) {
+    const job=jobFor(container.dataset.url),key=job?.status==='complete' ? `${job.downloadId}:${outputName(job)}:${job.exists}` : '';
+    if(container.dataset.resultKey===key)continue;
+    container.dataset.resultKey=key;container.replaceChildren();
+    if(key) {
+      const name=outputName(job);if(name)container.append(element('span','',name));
+      if(Number.isSafeInteger(job.downloadId))container.append(outputFolderButton(job.downloadId));
+      if(job.exists===false || job.resultUnavailable)container.append(element('span','hint','保存先で見つからない可能性があります。'));
+    }
+  }
+  for(const button of document.querySelectorAll('.direct-save,.media-save')) {
+    const saved=jobFor(button.dataset.url)?.status==='complete';
+    button.classList.toggle('primary',!saved);button.classList.toggle('secondary',saved);
+    if(saved){button.textContent='もう一度保存';button.setAttribute('aria-label',`${button.dataset.displayName || fileLabel(button.dataset.url)}をもう一度保存`);}
+  }
+  const completed=[...(state.history || []),...state.jobs,...mediaSaver.results.values()].filter(job=>job.status==='complete' && Number.isSafeInteger(job.downloadId));
+  const records=[...new Map(completed.map(job=>[job.downloadId,job])).values()].slice(-50).reverse();
+  $('saved-files').hidden=!records.length;
+  const key=records.map(job=>`${job.downloadId}:${outputName(job)}:${job.exists}`).join('|');
+  if($('saved-file-list').dataset.resultKey===key)return;
+  const focused=document.activeElement?.closest('#saved-file-list .show-file')?.dataset.downloadId;
+  $('saved-file-list').dataset.resultKey=key;$('saved-file-list').replaceChildren();
+  for(const job of records) {
+    const row=element('li','saved-output');row.append(element('span','',outputName(job) || '保存完了のファイル'),outputFolderButton(job.downloadId));$('saved-file-list').append(row);
+  }
+  if(focused)for(const button of $('saved-file-list').querySelectorAll('.show-file'))if(button.dataset.downloadId===focused)button.focus({preventScroll:true});
 }
 function renderImages() {
   const filters={query:$('query').value,width:Math.max(0,Number($('width').value)||0),height:Math.max(0,Number($('height').value)||0),type:$('type').value};
@@ -201,6 +248,7 @@ async function jobAction(type) {
 }
 function setupRecording() {
   recorder = new RecorderController({source:state,onUpdate:updateRecording,acquire:async mode=>{try{return await send('capture',{mode});}catch(e){e.name='CaptureControlError';throw e;}},release:()=>send('release')});
+  recordingResultView=new RecordingResultView({controller:recorder,showDownload:downloadId=>send('show-download',{downloadId})});
   initialRecorderMessage=recorder.snapshot().message;
   $('download-tab').addEventListener('click',()=>showView('download'));$('record-tab').addEventListener('click',()=>showView('record'));
   for(const id of ['download-tab','record-tab']) $(id).addEventListener('keydown',e=>{
@@ -245,7 +293,13 @@ function updateRecording(s) {
   const focused=document.activeElement, phaseChanged=previousRecordingPhase!==s.phase;
   const mode=document.querySelector('[name="record-mode"]:checked').value, disk=$('record-output').value==='file';
   const targetHint=mode==='tab' ? '元のタブを録画します。' : '開始後に共有する対象を選びます。別のタブも選べます。';
-  document.body.classList.toggle('recording-active',['starting','awaiting-audio-decision','recording','paused','finalizing'].includes(s.phase));
+  document.body.classList.toggle('recording-active',busy || (s.resultReady && !s.resultSaved));
+  document.body.classList.toggle('recording-result',s.resultReady && !s.resultSaved);
+  document.body.classList.toggle('has-recording-result',s.resultReady);
+  const layout=$('record-layout'),recordStage=$('record-stage'),settings=$('record-settings');
+  let layoutMoved=false;
+  if(s.resultReady && layout.firstElementChild!==recordStage){layout.insertBefore(recordStage,settings);layoutMoved=true;}
+  else if(!s.resultReady && layout.firstElementChild!==settings){layout.insertBefore(settings,recordStage);layoutMoved=true;}
   $('record-settings').hidden=busy || (s.resultReady && !s.resultSaved);
   document.body.classList.toggle('recording-error',s.phase==='error');
   $('record-panel').hidden=s.phase==='idle' && s.message===initialRecorderMessage;
@@ -282,6 +336,8 @@ function updateRecording(s) {
     $('stage-icon').querySelector('use').setAttribute('href',`icons.svg#${stage[0]}`);
     $('stage-title').textContent=stage[1];$('stage-hint').textContent=stage[2];
   }
+  recordingResultView?.update(s);
+  if(layoutMoved && focused?.isConnected && !focused.closest('[hidden]') && !focused.disabled)focused.focus({preventScroll:true});
   if(phaseChanged && focused && (focused.closest('[hidden]') || focused.disabled)) $('record-state').focus({preventScroll:true});
   if(phaseChanged && awaiting) $('record-state').focus({preventScroll:true});
   // A cancelled/failed start returns to a usable setting without stealing timer focus.

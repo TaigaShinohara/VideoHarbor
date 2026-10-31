@@ -48,4 +48,20 @@
 - embedded browser PASS。許可拒否後は同操作へfocus、合成許可後のscan再描画では見出しへfocus。別の実host付与済みprofileで実allFrames収集も確認した。権限のネイティブ確認UIと、人間の理解・スクリーンリーダーは未確認。
 - 早期比較に使える同名fixtureはbrowser smokeに保存。本人への誘導なし比較は未実施であり、人間への改善効果の採用判定は保留。
 
-Dの検証は実装後に追記する。
+### D — 結果を確認して終える
+
+停止後は実ファイル名・未保存/保存済み・明示再生を結果領域へまとめた。結果保持中は保存済みでも結果→次設定のDOM順とし、狭幅のキーボード順も一致させた。再生URLはdownload URLと別管理で、新録画の開始成功/明示破棄/画面終了で解放し、取消では前結果を保持する。ファイルの全量コピーは追加しない。Chrome保存は当拡張IDだけでフォルダへ、順次保存はclose済みreadHandleで再生する。
+
+- 独立UX/技術審査で、古いgetFile/playのreject/finallyが新結果を更新する競合、保存後の狭幅で設定が結果を押し下げる問題を指摘。viewの操作世代と実DOM順の変更で修正。別担当が遅延拒否・成功の4回帰を追加し、URL寿命3件と合わせ7件PASS、独立再実行もPASS。
+- DOM移動で停止後focusが失われるケースは実ブラウザで検出。移動前の有効なfocusを復元し、既存のhidden/disabled時移管も維持した。修正後browser smokeとembedded browserがPASS。
+- 未保存再生の高さは固定パネルの実高さを除いて調整し、明示再生で映像をスクロール。360pxで再生要素の下端が固定保存パネルの上端以下となる実座標を確認した。
+- 保存後の結果は、隔離Chromeの実tab zoom 200%でも横overflowがなく、DOM先頭に結果があることを確認した。
+- 隔離Chromeの実MediaRecorder録画を保存前と保存後に再生。実download IDのフォルダAPI呼出しを確認した。OSのフォルダ表示境界のみ合成し、Finder実表示とは区別する。
+- 同じ隔離profileのorigin-private filesystemで、本物のFileSystemFileHandleへ2本を順次保存した。AのサイズとSHA-256が共有取消・Bの実書込後も一致し、Bは別の実ファイルへ保存された。AのgetFile再生も成功。ネイティブ保存pickerは差し替えており、実ユーザーフォルダでの本人操作は未確認。
+
+## 統合結果と次の確認
+
+- v0.5.0: `npm test` 197件PASS、SKIPなし。`npm run check`・`git diff --check` PASS。
+- 隔離Chromeのbrowser smoke/embedded browser PASS。既存v0.4の出力形式・TS→MP4を含め、直接/HLS/DASH/別音声/blob保存を回帰。通常・別origin許可済み・srcdoc iframeの実allFrames収集も確認。
+- dev用の `npm run qa:ux` と [UX-MANUAL.md](UX-MANUAL.md) を用意した。合成動画はMac上で生成し、localhostだけに配信。別担当が実起動・UTF-8・動画差異・range・固定route/メソッド・終了時の自分のtemp消去まで確認した。
+- 実OS picker/権限・実音声の聴取・実ユーザーフォルダ/Finder・30分/容量/背景の長時間実測・Chrome116本体・実スクリーンリーダー・本人の理解は未確認。本人の誘導なし比較が残るため、全体の体験確認は完了扱いにしない。コード実装と自動/AI確認の完了を別に記録する。

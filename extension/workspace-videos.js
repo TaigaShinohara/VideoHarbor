@@ -60,6 +60,7 @@ export function renderVideoGroups({state,element,icon,statusElement,onSave,onRec
       }
       const actions=element('div','candidate-actions');
       const button=element('button',supported(item) ? `primary ${item.type==='direct' ? 'direct-save' : 'media-save'}` : 'secondary');button.dataset.url=item.url;
+      button.dataset.displayName=name;
       button.append(icon(supported(item) ? 'download' : 'record'),document.createTextNode(supported(item) ? '保存' : '録画へ'));
       button.setAttribute('aria-label',`${name} · ${fileLabel(item.url)}${supported(item) ? 'を保存' : 'の録画設定へ'}`);
       button.addEventListener('click',()=>supported(item) ? onSave(item) : onRecord());actions.append(button);

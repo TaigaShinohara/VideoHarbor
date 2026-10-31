@@ -198,6 +198,20 @@ select { width: 100%; min-height: 42px; border: 1px solid #c6d4cb; border-radius
 .embedded-section { margin: 24px 0; }
 .embedded-section > .hint { margin-top: 8px; }
 .previous-list { display: grid; gap: 8px; margin: 13px 0 0; padding-left: 20px; overflow-wrap: anywhere; }
+.record-result { display: grid; gap: 14px; border: 1px solid var(--line); border-radius: 13px; padding: 20px; background: var(--paper); min-width: 0; }
+#result-file-name { font-size: .9rem; overflow-wrap: anywhere; }
+#result-playback { display: block; width: 100%; max-height: 480px; border-radius: 8px; background: #172f29; }
+.recording-result .record-stage { grid-column: 1 / -1; }
+.has-recording-result:not(.recording-result) .record-stage { grid-column: 2; grid-row: 1; }
+.has-recording-result:not(.recording-result) .record-settings { grid-column: 1; grid-row: 1; }
+.recording-result #result-playback { max-height: 350px; }
+.saved-file-list { display: grid; gap: 12px; margin-top: 15px; padding: 0; list-style: none; }
+.saved-output { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 14px; overflow-wrap: anywhere; }
+.saved-output > span { flex: 1 1 180px; min-width: 0; font-size: .8rem; }
+@media (max-width: 760px) {
+  .has-recording-result:not(.recording-result) .record-stage { grid-column: 1; grid-row: 1; }
+  .has-recording-result:not(.recording-result) .record-settings { grid-column: 1; grid-row: 2; }
+}
 @media (max-width: 600px) {
   .video-group-heading { padding: 15px; gap: 11px; }
   .video-snapshot { width: 90px; }
