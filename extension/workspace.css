@@ -176,6 +176,9 @@ select { width: 100%; min-height: 42px; border: 1px solid #c6d4cb; border-radius
 #record-description { color: var(--muted); font-size: .76rem; overflow-wrap: anywhere; }
 #record-message { color: var(--muted); font-size: .79rem; overflow-wrap: anywhere; }
 .record-panel[data-state="error"] #record-message { color: #8f3137; }
+.audio-decision { display: grid; gap: 12px; padding: 14px; border: 1px solid #d9bf82; border-radius: 9px; background: #fff8e9; font-size: .85rem; }
+.recording-active .audio-decision { grid-column: 1 / -1; }
+.preview-stage[data-phase="awaiting-audio-decision"] .live-badge .record-dot { background: #e9d9aa; }
 .record-actions:has(> button:not([hidden])) { padding-top: 2px; }
 .record-actions:not(:has(> button:not([hidden]))), .result-actions:not(:has(> button:not([hidden]))) { display: none; }
 .result-actions { border-top: 1px solid var(--line); padding-top: 12px; }

@@ -93,7 +93,7 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 test('display picker runs synchronously before lock and final data survives stop', async (t) => {
   const h = harness(t);
-  const started = h.controller.start('display', true, 'memory');
+  const started = h.controller.start('display', false, 'memory');
   assert.deepEqual(h.calls, ['display']);
   assert.equal(await started, true);
   assert.deepEqual(h.calls, ['display', 'acquire:display']);
@@ -229,4 +229,325 @@ test('file-choice cancellation retains previous handle', async (t) => {
   assert.equal(await h.controller.chooseFile(), false);
   assert.equal(h.controller.snapshot().diskChosen, true);
   assert.equal(h.controller.snapshot().fileName, 'chosen.webm');
+});
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
+function fileDestination(name) {
+  const calls = [];
+  let contents = [];
+  let closed = false;
+  const handle = {
+    name,
+    async createWritable() {
+      calls.push('createWritable');
+      contents = [];
+      closed = false;
+      return {
+        async write(blob) { calls.push('write'); contents.push(blob); },
+        async close() { calls.push('close'); closed = true; },
+        async abort() { calls.push('abort'); },
+      };
+    },
+    async getFile() {
+      assert.equal(closed, true, 'read the output only after close succeeded');
+      calls.push('getFile');
+      return new Blob(contents, { type: 'video/webm' });
+    },
+  };
+  return { handle, calls };
+}
+
+test('a file destination is consumed once and a second recording preserves the first output', async (t) => {
+  const first = fileDestination('first.webm');
+  const second = fileDestination('second.webm');
+  const h = harness(t, { picker: async () => first.handle });
+  await h.controller.chooseFile();
+  assert.equal(await h.controller.start('display', false, 'file'), true);
+  assert.equal(h.controller.snapshot().diskChosen, false);
+  h.latest().chunk('first recording');
+  await h.controller.stop();
+  const firstFile = await h.controller.getResultFile();
+  assert.equal(await firstFile.text(), 'first recordingfinal');
+  assert.equal(h.controller.snapshot().fileName, 'first.webm');
+  assert.equal(h.controller.snapshot().resultPlaybackAvailable, true);
+  assert.equal(await h.controller.start('display', false, 'file'), false);
+  assert.equal(first.calls.filter((call) => call === 'createWritable').length, 1);
+  globalThis.showSaveFilePicker = async () => second.handle;
+  await h.controller.chooseFile();
+  assert.equal(h.controller.snapshot().fileName, 'first.webm');
+  assert.equal(h.controller.snapshot().chosenFileName, 'second.webm');
+  assert.equal(await (await h.controller.getResultFile()).text(), 'first recordingfinal');
+  h.mediaDevices.getDisplayMedia = async () => stream();
+  await h.controller.start('display', false, 'file');
+  h.latest().chunk('second recording');
+  await h.controller.stop();
+  assert.equal(await (await h.controller.getResultFile()).text(), 'second recordingfinal');
+  assert.equal(await firstFile.text(), 'first recordingfinal');
+  assert.equal(first.calls.filter((call) => call === 'createWritable').length, 1);
+  assert.equal(second.calls.filter((call) => call === 'createWritable').length, 1);
+  assert.equal(h.controller.snapshot().fileName, 'second.webm');
+});
+
+test('capture cancellation keeps the unused destination and completed playback result', async (t) => {
+  const first = fileDestination('completed.webm');
+  const next = fileDestination('next.webm');
+  const h = harness(t, { picker: async () => first.handle });
+  await h.controller.chooseFile();
+  await h.controller.start('display', false, 'file');
+  await h.controller.stop();
+  globalThis.showSaveFilePicker = async () => next.handle;
+  await h.controller.chooseFile();
+  h.mediaDevices.getDisplayMedia = async () => { throw new DOMException('cancel', 'NotAllowedError'); };
+  assert.equal(await h.controller.start('display', false, 'file'), false);
+  assert.equal(h.controller.snapshot().diskChosen, true);
+  assert.equal(h.controller.snapshot().chosenFileName, 'next.webm');
+  assert.equal(h.controller.snapshot().fileName, 'completed.webm');
+  assert.equal(await (await h.controller.getResultFile()).text(), 'final');
+  assert.deepEqual(next.calls, []);
+});
+
+test('requested audio with no live audio waits before creating either writer or recorder', async (t) => {
+  const output = fileDestination('with-decision.webm');
+  const media = stream(true);
+  media.getAudioTracks()[0].stop();
+  const h = harness(t, { media, picker: async () => output.handle });
+  await h.controller.chooseFile();
+  const started = h.controller.start('display', true, 'file');
+  assert.deepEqual(h.calls, ['display']);
+  await tick();
+  assert.equal(h.controller.snapshot().phase, 'awaiting-audio-decision');
+  assert.equal(h.controller.snapshot().audioRequested, true);
+  assert.equal(h.controller.snapshot().audio, false);
+  assert.equal(h.controller.busy, true);
+  assert.equal(h.controller.stream, media);
+  assert.equal(media.getVideoTracks()[0].readyState, 'live');
+  assert.deepEqual(output.calls, []);
+  assert.equal(Recorder.instances.length, 0);
+  assert.equal(await h.controller.start('display', false, 'file'), false);
+  assert.equal(h.calls.filter((call) => call === 'display').length, 1);
+  assert.equal(h.controller.continueWithoutAudio(), true);
+  assert.equal(await started, true);
+  assert.equal(h.controller.snapshot().phase, 'recording');
+  assert.equal(h.controller.snapshot().audioRequested, true);
+  assert.equal(h.controller.snapshot().audio, false);
+  await h.controller.stop();
+  assert.equal(h.controller.snapshot().audioRequested, true);
+  assert.equal(h.controller.snapshot().resultSaved, true);
+});
+
+test('audio decision cancellation preserves the unused destination and prior saved result', async (t) => {
+  const destination = fileDestination('pending.webm');
+  const h = harness(t, { picker: async () => destination.handle });
+  await h.controller.start('display', false, 'memory');
+  await h.controller.stop();
+  await h.controller.save();
+  const prior = await h.controller.getResultFile();
+  await h.controller.chooseFile();
+  const media = stream();
+  h.mediaDevices.getDisplayMedia = async () => media;
+  const started = h.controller.start('display', true, 'file');
+  await tick();
+  assert.equal(h.controller.snapshot().phase, 'awaiting-audio-decision');
+  assert.equal(await h.controller.getResultFile(), prior);
+  assert.equal(await h.controller.cancelStart(), true);
+  assert.equal(await started, false);
+  assert.equal(h.controller.snapshot().phase, 'saved');
+  assert.equal(h.controller.snapshot().diskChosen, true);
+  assert.equal(h.controller.snapshot().downloadId, 42);
+  assert.equal(await h.controller.getResultFile(), prior);
+  assert.equal(h.releases(), 2);
+  assert.ok(media.getTracks().every((track) => track.readyState === 'ended'));
+  assert.deepEqual(destination.calls, []);
+  assert.equal(Recorder.instances.length, 1);
+  assert.equal(h.controller.continueWithoutAudio(), false);
+});
+
+test('browser sharing end and concurrent stop settle an outstanding audio decision once', async (t) => {
+  const h = harness(t);
+  const started = h.controller.start('display', true, 'memory');
+  await tick();
+  assert.equal(h.controller.snapshot().phase, 'awaiting-audio-decision');
+  h.media.getVideoTracks()[0].end();
+  await Promise.all([h.controller.stop(), h.controller.stop()]);
+  assert.equal(await started, false);
+  assert.equal(h.releases(), 1);
+  assert.equal(Recorder.instances.length, 0);
+  assert.equal(h.controller.stream, null);
+  assert.equal(h.controller.busy, false);
+  assert.match(h.controller.snapshot().message, /共有が終了/);
+});
+
+test('cancelled native capture settles immediately and stops a late successful stream', async (t) => {
+  const h = harness(t);
+  const capture = deferred();
+  h.mediaDevices.getDisplayMedia = () => capture.promise;
+  const started = h.controller.start('display', false, 'memory');
+  assert.equal(await h.controller.cancelStart(), true);
+  assert.equal(await started, false);
+  assert.equal(h.controller.busy, false);
+  assert.equal(h.releases(), 0);
+  const late = stream(true);
+  capture.resolve(late);
+  await tick();
+  assert.ok(late.getTracks().every((track) => track.readyState === 'ended'));
+  assert.equal(Recorder.instances.length, 0);
+  assert.equal(h.controller.snapshot().phase, 'idle');
+});
+
+test('tab capture ID is consumed immediately and late capture is stopped after cancellation', async (t) => {
+  const h = harness(t);
+  const capture = deferred();
+  h.mediaDevices.getUserMedia = () => { h.calls.push('consume'); return capture.promise; };
+  const started = h.controller.start('tab', true, 'memory');
+  await tick();
+  assert.deepEqual(h.calls, ['acquire:tab', 'consume']);
+  assert.equal(await h.controller.stop(), true);
+  assert.equal(await started, false);
+  assert.equal(h.releases(), 1);
+  const late = stream(true);
+  capture.resolve(late);
+  await tick();
+  assert.ok(late.getTracks().every((track) => track.readyState === 'ended'));
+  assert.equal(Recorder.instances.length, 0);
+});
+
+test('cancellation during lock acquisition releases only a subsequently granted owned lock', async (t) => {
+  const grant = deferred();
+  const h = harness(t, { acquire: () => grant.promise });
+  const started = h.controller.start('display', true, 'memory');
+  await tick();
+  const stopped = h.controller.cancelStart();
+  assert.ok(h.media.getTracks().every((track) => track.readyState === 'ended'));
+  grant.resolve({});
+  assert.equal(await stopped, true);
+  assert.equal(await started, false);
+  assert.equal(h.releases(), 1);
+  assert.equal(Recorder.instances.length, 0);
+  assert.equal(h.controller.busy, false);
+});
+
+test('lock denial while audio is missing never enters audio decision or consumes a file', async (t) => {
+  const destination = fileDestination('pending.webm');
+  const h = harness(t, { picker: async () => destination.handle, acquire: () => { throw new Error('busy'); } });
+  await h.controller.chooseFile();
+  assert.equal(await h.controller.start('display', true, 'file'), false);
+  assert.equal(h.controller.snapshot().phase, 'error');
+  assert.equal(h.controller.snapshot().diskChosen, true);
+  assert.deepEqual(destination.calls, []);
+  assert.equal(h.releases(), 0);
+  assert.ok(h.media.getTracks().every((track) => track.readyState === 'ended'));
+});
+
+test('opening failure consumes the destination and MediaRecorder start failure keeps the prior result', async (t) => {
+  const destination = fileDestination('failed.webm');
+  const h = harness(t, { picker: async () => destination.handle });
+  await h.controller.start('display', false, 'memory');
+  await h.controller.stop();
+  await h.controller.save();
+  const prior = await h.controller.getResultFile();
+  await h.controller.chooseFile();
+  h.mediaDevices.getDisplayMedia = async () => stream();
+  Recorder.failStart = true;
+  assert.equal(await h.controller.start('display', false, 'file'), false);
+  assert.deepEqual(destination.calls, ['createWritable', 'abort']);
+  assert.equal(h.controller.snapshot().diskChosen, false);
+  assert.equal(h.controller.snapshot().phase, 'saved');
+  assert.equal(await h.controller.getResultFile(), prior);
+  globalThis.showSaveFilePicker = async () => ({
+    name: 'denied.webm', createWritable() { throw new DOMException('denied', 'NotAllowedError'); },
+  });
+  await h.controller.chooseFile();
+  assert.equal(await h.controller.start('display', false, 'file'), false);
+  assert.equal(h.controller.snapshot().diskChosen, false);
+  assert.equal(await h.controller.getResultFile(), prior);
+});
+
+test('cancellation while opening a writer consumes its selection and aborts a late writer', async (t) => {
+  const opening = deferred();
+  const actions = [];
+  const h = harness(t, { picker: async () => ({ name: 'pending.webm', createWritable: () => opening.promise }) });
+  await h.controller.chooseFile();
+  const started = h.controller.start('display', false, 'file');
+  await tick();
+  assert.equal(h.controller.snapshot().diskChosen, false);
+  assert.equal(await h.controller.stop(), true);
+  assert.equal(await started, false);
+  assert.equal(h.releases(), 1);
+  assert.equal(Recorder.instances.length, 0);
+  opening.resolve({ async abort() { actions.push('abort'); } });
+  await tick();
+  assert.deepEqual(actions, ['abort']);
+});
+
+test('file read is unavailable during final close and failed files are never offered for playback', async (t) => {
+  const close = deferred();
+  let reads = 0;
+  const h = harness(t, { picker: async () => ({
+    name: 'pending.webm', getFile: async () => { reads++; return new Blob(['file']); },
+    createWritable: async () => ({ write: async () => {}, close: () => close.promise, abort: async () => {} }),
+  }) });
+  await h.controller.chooseFile();
+  await h.controller.start('display', false, 'file');
+  const stopped = h.controller.stop();
+  await tick();
+  assert.equal(h.controller.snapshot().phase, 'finalizing');
+  assert.equal(await h.controller.getResultFile(), null);
+  assert.equal(reads, 0);
+  close.reject(new Error('disk failed'));
+  await stopped;
+  assert.equal(h.controller.snapshot().phase, 'error');
+  assert.equal(h.controller.snapshot().resultPlaybackAvailable, false);
+  assert.equal(await h.controller.getResultFile(), null);
+  assert.equal(reads, 0);
+  assert.equal(h.controller.snapshot().diskChosen, false);
+});
+
+test('memory playback remains available through interrupted save and keeps a completed download ID', async (t) => {
+  const h = harness(t);
+  assert.equal(await h.controller.getResultFile(), null);
+  await h.controller.start('display', false, 'memory');
+  h.latest().chunk('content');
+  await h.controller.stop();
+  const file = await h.controller.getResultFile();
+  assert.equal(await file.text(), 'contentfinal');
+  assert.equal(h.controller.snapshot().downloadId, null);
+  h.downloads.search = async () => [{ id: 42, state: 'interrupted', error: 'USER_CANCELED' }];
+  assert.equal(await h.controller.save(), false);
+  assert.equal(await h.controller.getResultFile(), file);
+  assert.equal(h.controller.snapshot().downloadId, null);
+  h.downloads.search = async () => [{ id: 42, state: 'complete' }];
+  assert.equal(await h.controller.save(), true);
+  assert.equal(h.controller.snapshot().downloadId, 42);
+  assert.equal(await h.controller.getResultFile(), file);
+  assert.equal(h.controller.discard(), true);
+  assert.equal(await h.controller.getResultFile(), null);
+  assert.equal(h.controller.snapshot().downloadId, null);
+});
+
+
+test('completed memory save exposes the actual renamed basename and a filename lookup failure keeps success', async (t) => {
+  const h = harness(t);
+  await h.controller.start('display', false, 'memory');
+  await h.controller.stop();
+  h.downloads.search = async () => [{ id: 42, state: 'complete', filename: '/Downloads/renamed.webm' }];
+  assert.equal(await h.controller.save(), true);
+  assert.equal(h.controller.snapshot().fileName, 'renamed.webm');
+  assert.equal(h.controller.snapshot().downloadId, 42);
+  let queries = 0;
+  h.downloads.search = async () => {
+    if (queries++ === 0) return [{ id: 42, state: 'in_progress' }];
+    throw new Error('temporary search failure');
+  };
+  const saved = h.controller.save();
+  await tick();
+  for (const listener of h.listeners) listener({ id: 42, state: { current: 'complete' } });
+  assert.equal(await saved, true);
+  assert.equal(h.controller.snapshot().resultSaved, true);
+  assert.equal(h.controller.snapshot().fileName, 'renamed.webm');
 });

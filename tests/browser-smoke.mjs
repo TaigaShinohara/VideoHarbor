@@ -151,6 +151,12 @@ try {
       Object.defineProperty(navigator.mediaDevices,'getDisplayMedia',{configurable:true,writable:true,value:window.__fixtureGetDisplayMedia});
     });
     await manager.locator('#start-record').click();
+    await manager.waitForFunction(()=>document.querySelector('#record-panel').dataset.state==='awaiting-audio-decision');
+    assert.equal(await manager.locator('#audio-decision').isVisible(),true);
+    assert.equal(await manager.locator('#record-metrics').isVisible(),false,'no recorded metrics before the audio decision');
+    assert.match(await manager.locator('#live-label').textContent(),/録画未開始/);
+    await screenshots('audio-decision');
+    await manager.locator('#continue-without-audio').click();
     await manager.waitForFunction(()=>document.querySelector('#record-state').textContent==='録画中');
     assert.equal(await manager.locator('#download-tab').isDisabled(),true);
     assert.equal(await manager.locator('#record-settings').isVisible(),false);
@@ -192,6 +198,7 @@ try {
     assert.equal(await manager.locator('#download-tab').isDisabled(),false);
     await assertFocused('record-state');
     await screenshots('saved');
+    await manager.locator('#record-audio').uncheck();
     const [savedCapture]=await manager.evaluate(()=>chrome.downloads.search({urlRegex:'^blob:'}));
     const captureBytes=await readFile(savedCapture.filename);assert.ok(captureBytes.length>100);
     clip=captureBytes;
@@ -224,6 +231,9 @@ try {
     await assertFocused('record-state');
     await manager.evaluate(()=>window.__releaseDiskClose());
     await manager.waitForFunction(()=>document.querySelector('#record-panel').dataset.state==='saved');
+    assert.equal(await manager.locator('#start-record').isDisabled(),true,'the selected output file belongs to one recording only');
+    assert.match(await manager.locator('#chosen-file').textContent(),/未選択/);
+    await manager.locator('#choose-file').click();
     await manager.evaluate(()=>{window.__diskWriteFailure=true;});
     await manager.locator('#start-record').click();
     await manager.waitForFunction(()=>document.querySelector('#record-panel').dataset.state==='recording');
@@ -231,7 +241,7 @@ try {
     await manager.waitForFunction(()=>document.querySelector('#record-panel').dataset.state==='error');
     assert.match(await manager.locator('#record-message').textContent(),/不完全なファイル/);
     assert.equal(await manager.locator('#save-record').isVisible(),false,'failed disk recording does not claim a recoverable memory result');
-    assert.equal(await manager.locator('#start-record').isDisabled(),false);
+    assert.equal(await manager.locator('#start-record').isDisabled(),true,'a failed file write also consumes its output choice');
     assert.equal(await manager.locator('#stage-title').textContent(),'録画・保存を確認');
     // A MediaRecorder error can still leave a Blob: error and its save action coexist.
     await manager.locator('.output-settings > summary').click();
