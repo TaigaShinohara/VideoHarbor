@@ -28,8 +28,18 @@ class Recorder extends EventTarget {
     this.state = 'recording';
   }
   chunk(value) {
+    this.emitChunk(new Blob([value]));
+  }
+  sizedChunk(size, label = 'synthetic') {
+    // Exercise byte accounting without allocating hundreds of MiB. The Blob
+    // keeps a tiny genuine payload; only its reported event size is synthetic.
+    const blob = new Blob([label]);
+    Object.defineProperty(blob, 'size', { value: size });
+    this.emitChunk(blob);
+  }
+  emitChunk(blob) {
     const event = new Event('dataavailable');
-    Object.defineProperty(event, 'data', { value: new Blob([value]) });
+    Object.defineProperty(event, 'data', { value: blob });
     this.dispatchEvent(event);
   }
   pause() { this.state = 'paused'; }
@@ -43,7 +53,7 @@ class Recorder extends EventTarget {
 }
 
 function harness(t, options = {}) {
-  const names = ['navigator', 'MediaRecorder', 'showSaveFilePicker', 'chrome', 'AudioContext', 'performance'];
+  const names = ['navigator', 'MediaRecorder', 'showSaveFilePicker', 'chrome', 'AudioContext', 'performance', 'setInterval', 'clearInterval'];
   const original = new Map(names.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
   const listeners = new Set();
   const captured = [];
@@ -58,6 +68,14 @@ function harness(t, options = {}) {
   Object.defineProperty(globalThis, 'showSaveFilePicker', { configurable: true, writable: true, value: options.picker });
   let now = 0;
   Object.defineProperty(globalThis, 'performance', { configurable: true, value: { now: () => now } });
+  const intervals = new Map();
+  if (options.manualIntervals) {
+    let nextInterval = 0;
+    Object.defineProperty(globalThis, 'setInterval', { configurable: true, writable: true, value: (callback, delay) => {
+      const id = ++nextInterval; intervals.set(id, { callback, delay }); return id;
+    } });
+    Object.defineProperty(globalThis, 'clearInterval', { configurable: true, writable: true, value: (id) => intervals.delete(id) });
+  }
   let audioContexts = 0;
   Object.defineProperty(globalThis, 'AudioContext', { configurable: true, value: class {
     constructor() { audioContexts++; this.state = 'running'; this.destination = {}; }
@@ -86,7 +104,8 @@ function harness(t, options = {}) {
   });
   return { controller, mediaDevices, media: resultStream, captured, calls, downloads,
     releases: () => releases, audioContexts: () => audioContexts,
-    now: (value) => { now = value; }, latest: () => Recorder.instances.at(-1), listeners };
+    now: (value) => { now = value; }, latest: () => Recorder.instances.at(-1), listeners, intervals,
+    heartbeat: () => { for (const { callback, delay } of [...intervals.values()]) if (delay === 1000) callback(); } };
 }
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
@@ -550,4 +569,137 @@ test('completed memory save exposes the actual renamed basename and a filename l
   assert.equal(await saved, true);
   assert.equal(h.controller.snapshot().resultSaved, true);
   assert.equal(h.controller.snapshot().fileName, 'renamed.webm');
+});
+
+test('memory recording stays active below 256 MiB and auto-stops at the exact threshold while retaining the final chunk', async (t) => {
+  const h = harness(t, { manualIntervals: true });
+  await h.controller.start('display', false, 'memory');
+  const recorder = h.latest(), limit = 256 * 1024 * 1024;
+  recorder.sizedChunk(limit - 1, 'below');
+  await tick();
+  assert.equal(h.controller.snapshot().phase, 'recording');
+  assert.equal(h.controller.snapshot().bytes, limit - 1);
+  assert.equal(recorder.stopCount, 0);assert.equal(h.releases(), 0);
+  assert.ok(h.media.getTracks().every(track => track.readyState === 'live'));
+  recorder.sizedChunk(1, 'threshold');
+  await tick();
+  const result = h.controller.snapshot();
+  assert.equal(result.phase, 'ready');assert.equal(recorder.stopCount, 1);
+  assert.equal(result.bytes, limit + 5, 'MediaRecorder final data is retained after reaching the stop threshold');
+  assert.equal(result.resultReady, true);assert.equal(result.resultSaved, false);
+  assert.match(result.message, /256MiB.*自動停止.*最終データ分は超過/);
+  assert.equal(await (await h.controller.getResultFile()).text(), 'belowthresholdfinal');
+  assert.ok(h.media.getTracks().every(track => track.readyState === 'ended'));
+  assert.equal(h.controller.stream, null);assert.equal(h.releases(), 1);assert.equal(h.intervals.size, 0);
+});
+
+test('a memory chunk crossing 256 MiB stops automatically without truncating either that chunk or the final data', async (t) => {
+  const h = harness(t, { manualIntervals: true });
+  await h.controller.start('display', false, 'memory');
+  const recorder = h.latest(), limit = 256 * 1024 * 1024;
+  recorder.sizedChunk(limit - 4, 'before');
+  await tick();assert.equal(recorder.stopCount, 0);
+  recorder.sizedChunk(17, 'crossing');
+  await tick();
+  assert.equal(h.controller.snapshot().phase, 'ready');
+  assert.equal(h.controller.snapshot().bytes, limit + 18);
+  assert.equal(await (await h.controller.getResultFile()).text(), 'beforecrossingfinal');
+  assert.equal(h.controller.snapshot().resultSaved, false);
+  assert.equal(recorder.stopCount, 1);assert.equal(h.releases(), 1);
+  assert.ok(h.media.getTracks().every(track => track.readyState === 'ended'));
+  assert.equal(h.intervals.size, 0);
+});
+
+test('pending file writes below 32 MiB keep recording; exactly 32 MiB stops sharing and waits for a confirmed close', async (t) => {
+  const blocked = deferred(), actions = [];
+  const writable = {
+    async write(blob) { const text = await blob.text();actions.push(text);if (text === 'blocked') await blocked.promise; },
+    async close() { actions.push('close'); },async abort() { actions.push('abort'); },
+  };
+  const h = harness(t, { manualIntervals: true, picker: async () => ({ name: 'bounded.webm', createWritable: async () => writable }) });
+  await h.controller.chooseFile();await h.controller.start('display', false, 'file');
+  const recorder = h.latest(), limit = 32 * 1024 * 1024;
+  try {
+    recorder.sizedChunk(limit - 1, 'blocked');await tick();
+    assert.deepEqual(actions, ['blocked']);assert.equal(h.controller.snapshot().phase, 'recording');
+    assert.equal(recorder.stopCount, 0);assert.equal(h.releases(), 0);
+    recorder.sizedChunk(1, 'threshold');await tick();
+    assert.equal(recorder.stopCount, 1);assert.equal(h.controller.snapshot().phase, 'finalizing');
+    assert.equal(h.controller.snapshot().resultSaved, false);assert.equal(h.controller.snapshot().resultReady, false);
+    assert.equal(await h.controller.getResultFile(), null);
+    assert.ok(h.media.getTracks().every(track => track.readyState === 'ended'), 'sharing stops before the slow writer flushes');
+    assert.equal(h.releases(), 0);assert.deepEqual(actions, ['blocked']);
+  } finally {blocked.resolve();await h.controller.stop();}
+  assert.deepEqual(actions, ['blocked', 'threshold', 'final', 'close']);
+  assert.equal(h.controller.snapshot().phase, 'saved');assert.equal(h.controller.snapshot().resultSaved, true);
+  assert.equal(h.controller.snapshot().bytes, limit + 5);
+  assert.match(h.controller.snapshot().message, /書き込みが追いつかないため自動停止.*ファイル保存完了/);
+  assert.equal(h.controller.stream, null);assert.equal(h.releases(), 1);assert.equal(h.intervals.size, 0);
+});
+
+test('completed writes return the queue budget so total file size can exceed 32 MiB without triggering the pending-write stop', async (t) => {
+  const destination = fileDestination('draining.webm');
+  const h = harness(t, { manualIntervals: true, picker: async () => destination.handle });
+  await h.controller.chooseFile();await h.controller.start('display', false, 'file');
+  const recorder = h.latest(), size = 32 * 1024 * 1024 - 1;
+  recorder.sizedChunk(size, 'first');await tick();
+  recorder.sizedChunk(size, 'second');await tick();
+  assert.equal(h.controller.snapshot().phase, 'recording');assert.equal(recorder.stopCount, 0);
+  assert.equal(h.controller.snapshot().bytes, 2 * size);
+  assert.ok(h.media.getTracks().every(track => track.readyState === 'live'));
+  await h.controller.stop();
+  assert.equal(h.controller.snapshot().phase, 'saved');assert.equal(h.controller.snapshot().resultSaved, true);
+  assert.equal(await (await h.controller.getResultFile()).text(), 'firstsecondfinal');
+  assert.equal(destination.calls.filter(action => action === 'close').length, 1);
+  assert.equal(destination.calls.includes('abort'), false);assert.equal(h.releases(), 1);
+});
+
+test('a write failure after the 32 MiB queue stop aborts the file, drains cleanup and never advertises a saved output', async (t) => {
+  const blocked = deferred(), actions = [];
+  const writable = {
+    async write(blob) { actions.push(await blob.text());await blocked.promise; },
+    async close() { actions.push('close'); },async abort() { actions.push('abort'); },
+  };
+  const h = harness(t, { manualIntervals: true, picker: async () => ({ name: 'failed-limit.webm', createWritable: async () => writable }) });
+  await h.controller.chooseFile();await h.controller.start('display', false, 'file');
+  const recorder = h.latest();
+  try {
+    recorder.sizedChunk(32 * 1024 * 1024, 'blocked');await tick();
+    assert.equal(h.controller.snapshot().phase, 'finalizing');assert.equal(recorder.stopCount, 1);
+    assert.equal(h.controller.snapshot().resultSaved, false);assert.equal(h.releases(), 0);
+    assert.ok(h.media.getTracks().every(track => track.readyState === 'ended'));
+    blocked.reject(new Error('synthetic disk full'));await tick();
+  } finally {blocked.resolve();await h.controller.stop();}
+  assert.deepEqual(actions, ['blocked', 'abort'], 'failed writes skip later queued chunks and never close as a successful file');
+  assert.equal(h.controller.snapshot().phase, 'error');assert.equal(h.controller.snapshot().resultSaved, false);
+  assert.equal(h.controller.snapshot().resultReady, false);assert.equal(h.controller.snapshot().resultPlaybackAvailable, false);
+  assert.equal(h.controller.snapshot().diskChosen, false);assert.equal(await h.controller.getResultFile(), null);
+  assert.match(h.controller.snapshot().message, /書き込みに失敗.*不完全なファイル/);
+  assert.equal(h.controller.stream, null);assert.equal(h.releases(), 1);assert.equal(h.intervals.size, 0);
+});
+
+for (const output of ['memory', 'file']) test(`${output} recording excludes a long pause and auto-stops at exactly 30 active minutes`, async (t) => {
+  const destination = fileDestination('time-limit.webm');
+  const h = harness(t, { manualIntervals: true, picker: async () => destination.handle });
+  if (output === 'file') await h.controller.chooseFile();
+  await h.controller.start('display', false, output);
+  const recorder = h.latest(), limit = 30 * 60 * 1000, pauseDuration = 60 * 60 * 1000;
+  h.now(limit - 1);h.heartbeat();await tick();
+  assert.equal(h.controller.snapshot().phase, 'recording');assert.equal(recorder.stopCount, 0);
+  assert.equal(h.controller.snapshot().elapsed, limit - 1);assert.equal(h.releases(), 0);
+  assert.equal(h.controller.pause(), true);
+  h.now(limit - 1 + pauseDuration);h.heartbeat();await tick();
+  assert.equal(h.controller.snapshot().phase, 'paused');assert.equal(h.controller.snapshot().elapsed, limit - 1);
+  assert.equal(recorder.stopCount, 0);assert.ok(h.media.getTracks().every(track => track.readyState === 'live'));
+  assert.equal(h.controller.resume(), true);
+  h.now(limit + pauseDuration);h.heartbeat();await tick();
+  const result = h.controller.snapshot();
+  assert.equal(result.elapsed, limit);assert.equal(recorder.stopCount, 1);
+  assert.equal(result.phase, output === 'file' ? 'saved' : 'ready');
+  assert.equal(result.resultSaved, output === 'file');assert.equal(result.resultReady, true);
+  assert.match(result.message, /30分に達したため自動停止/);
+  assert.equal(await (await h.controller.getResultFile()).text(), 'final');
+  if (output === 'file') assert.deepEqual(destination.calls, ['createWritable', 'write', 'close', 'getFile']);
+  assert.ok(h.media.getTracks().every(track => track.readyState === 'ended'));
+  assert.equal(h.controller.stream, null);assert.equal(h.releases(), 1);assert.equal(h.intervals.size, 0);
 });

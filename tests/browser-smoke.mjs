@@ -6,6 +6,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createServer} from 'node:http';
+import {launchTestExtension} from './chrome-runtime.mjs';
 const {chromium}=await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const repo=fileURLToPath(new URL('../',import.meta.url));
 const scratch=await mkdtemp(join(tmpdir(),'media-extension-qa-'));
@@ -28,11 +29,8 @@ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const origin=`http://127.0.0.1:${server.address().port}`;
 let context;
 try {
-  context=await chromium.launchPersistentContext(join(scratch,'profile'),{channel:process.env.CHROME_CHANNEL || 'chrome',headless:true,acceptDownloads:true,viewport:{width:1280,height:900},ignoreDefaultArgs:['--disable-extensions'],args:['--enable-unsafe-extension-debugging','--autoplay-policy=no-user-gesture-required','--no-first-run']});
-  const browserSession=await context.browser().newBrowserCDPSession();
-  const {id}=await browserSession.send('Extensions.loadUnpacked',{path:extension});
-  let worker=context.serviceWorkers().find(w=>w.url().includes(id));
-  if(!worker) worker=await context.waitForEvent('serviceworker',{predicate:w=>w.url().includes(id)});
+  const runtime=await launchTestExtension(chromium,join(scratch,'profile'),extension,{acceptDownloads:true,viewport:{width:1280,height:900},ignoreDefaultArgs:['--disable-extensions'],args:['--autoplay-policy=no-user-gesture-required','--no-first-run']});
+  context=runtime.context;const {worker,id}=runtime;
   const page=await context.newPage();await page.goto(origin);
   // Generate a small synthetic video locally; no remote media or personal pages.
   clip=Buffer.from(await page.evaluate(async()=>{
@@ -348,7 +346,10 @@ try {
     assert.ok(files.secondSize>100,'the second recording writes a different real file');
     await screenshots('file-saved');
     await manager.setViewportSize({width:1280,height:900});
-    const workspaceTab=await worker.evaluate(async url=>(await chrome.tabs.query({})).find(tab=>tab.url===url),manager.url());
+    // Chrome 116 omits this extension tab's URL from tabs.query without tabs
+    // permission. The workspace can identify its own real tab directly.
+    const workspaceTab=await manager.evaluate(()=>chrome.tabs.getCurrent());
+    assert.ok(Number.isInteger(workspaceTab?.id),'the real workspace tab is available for zoom');
     await worker.evaluate(async id=>chrome.tabs.setZoom(id,2),workspaceTab.id);
     assert.ok(await manager.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'Chrome 200% zoom keeps the saved result within the layout');
     assert.equal(await manager.locator('#record-layout').evaluate(el=>el.firstElementChild.id),'record-stage');
