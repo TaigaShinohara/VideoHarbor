@@ -36,5 +36,6 @@
 - 独立審査で、実絶対pathをretryの予定filenameへ流用する問題、同URL再読込で古いscanが採用される問題、一時outlineのCSSOM正規化と連打時復旧を指摘。actualFilename分離、commit前の実document検査、所有timerによる復旧へ修正し、再審査で解消。
 - inspect/showは当拡張の既知downloadIdまたはbyExtensionIdを単一IDで確認する。別のダウンロード履歴全体は取得しない。
 - 実allFrames、about:blank/srcdoc、元ページの一時強調の見た目はCのブラウザ統合で確認する。
+- B最終の集中試験44件PASS。並行作業のv0.4.0（保存形式選択・TS→MP4）を統合し、保存形式関連を含む集中61件PASS。Bまでを含む専用コピーでbrowser smokeとembedded browserの両方がPASSし、実allFrames、直接/HLS/DASH/別音声/blob保存・MP4再構成・全編decodeを回帰確認した。元ページの一時強調の実表示はCで追加確認する。
 
 C〜Dの検証は実装後に追記する。
