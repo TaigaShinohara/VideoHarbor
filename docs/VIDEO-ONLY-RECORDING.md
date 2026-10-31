@@ -41,7 +41,7 @@ Chrome116では元動画がmutedまたはvolume=0の場合、liveなaudio track�
 
 ## 検証記録
 
-2026-10-31：`npm test` 275件PASS、失敗・SKIPなし。`npm run check`、`git diff --check` PASS。既存の隔離Chrome `npm run test:browser` PASS。実動画録画の製品経路QAは以下へ追記する。
+2026-10-31：`npm test` 292件PASS、失敗・SKIPなし。`npm run check`、`git diff --check` PASS。既存の隔離Chrome `npm run test:browser` と `npm run test:embedded` PASS。先にマージされた画像候補除外の修正を取り込み、画像除外・動画要素列挙・旧session移行の契約を両方保持している。独立の統合差分レビューでも確認した。
 
 独立レビューの指摘と処理：
 
@@ -58,3 +58,22 @@ Chrome116では元動画がmutedまたはvolume=0の場合、liveなaudio track�
 独立再レビューは上記の解消と、確認範囲に追加P1/P2の阻害要因がないことを確認した。根拠は静的レビュー・限定Node再現であり、ブラウザQAや人間の確認の代用にはしない。
 
 実OS picker、実音声の聴取品質、個人の実サイト、通常Chromeでの本人の操作理解は隔離自動試験とは別確認とする。動画だけの30分実時間・OSスリープを含む長時間動作は今回未確認。
+
+
+### 実動画要素から保存までの製品QA
+
+`npm run test:video` をChrome156とChrome for Testing116で実行した。個人profileを使わず、テストコピーだけにlocalhostのhost権限を与えた。元ページの実video→captureStream→source MediaRecorder→実Chrome messaging→controller→実保存・結果再生を通す。共有streamやMediaRecorderを合成実装へ置換していない。
+
+- 赤い対象動画と青い別動画を同時に再生し、出力が対象本来の320×180であること、ページの文字・重なる黄色UI・別動画が入らない対象色の映像を確認。440Hz/1200Hzの別々の音を使い対象音の分離を解析し、保存した映像・音声を全編decodeした。
+- 背景タブ、拡張pause/resume、元videoのpause/seek、scroll/resize、ミュート時の判断と取消・明示無音続行、CORS許可と拒否、同/別origin iframe、MSE映像、URLなしsrcObjectを試験。
+- srcObjectは停止後も元ページ所有の全trackがliveであることを確認した。自然終了、再生元差替え、元タブ消失時の救済表示・lock解放も確認した。
+- メモリ録画の実Chrome downloadと、OPFSの本物のfile handle/writer/closeによる順次保存を行い、各Chromeで8本の成果物を全編decodeした。Chrome downloadの保存pickerはCDPの一時保存先指定、順次保存のpickerはテスト用OPFS handleへの置換であり、実OS pickerは確認していない。
+- 1280/360/320pxの準備・録画中・結果を撮影。横overflowなしを測定し、AIが狭幅で停止と保存の操作が見えることを確認した。人間の理解・快適さの確認ではない。
+
+### 本人が確認する手順
+
+1. 既存の録画・未保存データがない状態で今回の `extension/` をChromeへ読み込む/再読み込みする。
+2. 許可された動画を元ページで再生する。音声を含める場合は元動画のミュートを解除し音量を上げる。
+3. 拡張を開き「この動画を録画」を選ぶ。動画名・画像と「元ページで確認」で対象を確かめる。
+4. 音声・保存方法を選び「録画を開始」。停止後に「録画を再生」で映像と音を確認し、ファイル保存を完了する。
+5. 初回と反復で対象を選び間違えないか、音声なし判断と未保存/保存済みを理解できるかを確かめる。実サイトの対応可否はサイトごとに確認する。
