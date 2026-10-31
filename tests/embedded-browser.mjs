@@ -210,12 +210,25 @@ try {
       return Promise.resolve(window.__permissionAccept);
     };
   });
+  const previousPermission=await manager.locator('.frame-permission').elementHandle();
   await manager.locator('.frame-permission').click();
   await manager.waitForFunction(()=>document.querySelector('#error').textContent.includes('許可されませんでした'));
+  await manager.waitForFunction(()=>document.activeElement?.classList.contains('frame-permission'));
   assert.equal(await manager.locator('#direct-list .video-card').filter({hasText:'cross.mp4'}).count(),0,'decline never inspects cross-origin content');
+  await manager.evaluate(()=>{
+    window.__permissionAccept=true;
+    const contains=chrome.permissions.contains.bind(chrome.permissions);
+    chrome.permissions.contains=options=>options.origins?.some(origin=>origin.includes('localhost')) ? Promise.resolve(true) : contains(options);
+  });
+  await manager.locator('.frame-permission').click();
+  await manager.waitForFunction(()=>document.activeElement?.id==='download-heading' && !document.querySelector('#scan').disabled);
+  assert.equal(await previousPermission.evaluate(el=>el.isConnected),false,'the permission scan replaced the old action while focus moved to the new results');
   let permissionRequests=await manager.evaluate(()=>window.__permissionRequests);
   assert.deepEqual(permissionRequests[0].origins,['http://localhost/*']);
   assert.equal(permissionRequests[0].active,true,'iframe permission request is reached within the click gesture');
+  assert.deepEqual(permissionRequests[1].origins,['http://localhost/*']);
+  assert.equal(permissionRequests[1].active,true);
+  await manager.evaluate(()=>{window.__permissionAccept=false;});
 
   const tsURL=origin+'/ts/index.m3u8';
   assert.equal(await outputFormat(manager,tsURL).inputValue(),'mp4','HLS initially prefers actual MP4 output');
@@ -230,7 +243,7 @@ try {
   await manager.evaluate(()=>{window.__permissionAccept=true;});
   await saveAndDecode(manager,tsURL,'saved-hls.ts','mpegts',{standaloneHLS:true,selectedFormat:'auto'});
   permissionRequests=await manager.evaluate(()=>window.__permissionRequests);
-  for(const request of permissionRequests.slice(1)) {
+  for(const request of permissionRequests.slice(2)) {
     assert.deepEqual(request.origins,['http://127.0.0.1/*'],'HLS request names only its concrete local host');
     assert.equal(request.active,true,'HLS permission request is reached within the click gesture');
   }

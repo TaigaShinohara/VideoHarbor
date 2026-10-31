@@ -180,6 +180,32 @@ select { width: 100%; min-height: 42px; border: 1px solid #c6d4cb; border-radius
 #record-description { color: var(--muted); font-size: .76rem; overflow-wrap: anywhere; }
 #record-message { color: var(--muted); font-size: .79rem; overflow-wrap: anywhere; }
 .record-panel[data-state="error"] #record-message { color: #8f3137; }
+.video-group { min-width: 0; border: 1px solid var(--line); border-radius: 13px; overflow: hidden; background: var(--paper); }
+.video-group-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 13px; padding: 17px 18px; background: #edf4ef; }
+.video-identity { flex: 1 1 200px; min-width: 0; }
+.video-title { margin: 0; color: var(--ink); font-size: .97rem; overflow-wrap: anywhere; }
+.video-identity .meta { margin-top: 5px; }
+.video-snapshot { width: 120px; aspect-ratio: 16 / 9; object-fit: contain; border-radius: 6px; background: #17332b; }
+.video-group .video-card { border: 0; border-radius: 0; box-shadow: none; }
+.video-group .video-card + .video-card { border-top: 1px solid var(--line); }
+.source-alternatives { border-top: 1px solid var(--line); }
+.source-alternatives > summary { padding: 12px 18px; color: var(--muted); font-size: .8rem; }
+.candidate-actions { display: grid; gap: 8px; align-self: center; }
+.candidate-result { display: grid; gap: 6px; max-width: 200px; font-size: .75rem; overflow-wrap: anywhere; }
+.candidate-result:empty { display: none; }
+.embed-list { display: grid; gap: 10px; margin-top: 14px; }
+.embed-card { display: grid; gap: 11px; padding: 18px; border: 1px solid var(--line); border-radius: 11px; background: var(--paper); }
+.embedded-section { margin: 24px 0; }
+.embedded-section > .hint { margin-top: 8px; }
+.previous-list { display: grid; gap: 8px; margin: 13px 0 0; padding-left: 20px; overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  .video-group-heading { padding: 15px; gap: 11px; }
+  .video-snapshot { width: 90px; }
+  .video-group-heading > button { width: 100%; }
+  .video-card > .candidate-actions { grid-column: 1 / -1; width: 100%; }
+  .candidate-actions > button { width: 100%; }
+  .candidate-result { max-width: 100%; }
+}
 .audio-decision { display: grid; gap: 12px; padding: 14px; border: 1px solid #d9bf82; border-radius: 9px; background: #fff8e9; font-size: .85rem; }
 .recording-active .audio-decision { grid-column: 1 / -1; }
 .preview-stage[data-phase="awaiting-audio-decision"] .live-badge .record-dot { background: #e9d9aa; }
