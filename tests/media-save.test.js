@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {MediaSaver,originPattern} from '../extension/media-save.js';
+import {validateMediaSegment} from '../extension/media-validation.js';
+import {muxFragmentedMP4} from '../extension/mp4-mux.js';
+import {remuxTSToMP4} from '../extension/ts-to-mp4.js';
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const deferred = () => { let resolve,reject; const promise = new Promise((yes,no) => {resolve=yes;reject=no;}); return {promise,resolve,reject}; };
@@ -10,7 +13,7 @@ function harness(t,options={}) {
   const originals = new Map(['chrome','fetch'].map(key => [key,Object.getOwnPropertyDescriptor(globalThis,key)]));
   const urlOriginals = new Map(['createObjectURL','revokeObjectURL'].map(key => [key,Object.getOwnPropertyDescriptor(URL,key)]));
   const calls=[], listeners=new Set(), granted=new Set(options.granted || []), downloads=new Map(), released=[];
-  const h = {calls,listeners,granted,downloads,released,requestResult:true,state:options.state || 'complete',fetch:options.fetch};
+  const h = {calls,listeners,granted,downloads,released,processors:[],requestResult:true,state:options.state || 'complete',fetch:options.fetch};
   const chrome = {
     permissions:{
       async contains({origins}) {calls.push(['contains',...origins]);return origins.every(origin => granted.has(origin));},
@@ -34,7 +37,21 @@ function harness(t,options={}) {
     return {size:3,mime:'video/webm',bytes:offset<0 ? [] : [1,2,3]};
   };
   h.readBlob=options.readBlob || defaultReader;
-  h.saver=new MediaSaver({readBlob:(...args)=>h.readBlob(...args),onUpdate:()=>{if(options.onUpdate)options.onUpdate(h);}});
+  // Node has no extension Worker. Inject the pure functions explicitly in this
+  // harness; production must never use this as a fallback for a failed worker.
+  const processorFactory=({signal})=>{
+    const processor=options.processorFactory ? options.processorFactory({signal},h) : {
+      async validate(...args){signal.throwIfAborted();return validateMediaSegment(...args);},
+      async mux(...args){signal.throwIfAborted();return muxFragmentedMP4(...args);},
+      async remux(...args){signal.throwIfAborted();return remuxTSToMP4(...args);},
+      close(){this.closed=true;},
+    };
+    // MediaProcessor.close is idempotent: cancel and finally may both invoke it.
+    const close=processor.close.bind(processor);let closed=false;
+    processor.close=()=>{if(!closed){closed=true;close();}};
+    h.processors.push(processor);return processor;
+  };
+  h.saver=new MediaSaver({processorFactory,readBlob:(...args)=>h.readBlob(...args),onUpdate:()=>{if(options.onUpdate)options.onUpdate(h);}});
   t.after(async()=>{
     h.saver.cancel();h.emit(42,'interrupted');
     if(h.acceptDownload)h.acceptDownload.resolve();
@@ -334,4 +351,141 @@ test('changed-format retry cannot save a stale MP4 buffer when the new source is
   assert.equal(previous.blob,undefined);assert.equal(h.saver.status(blobItem.url).status,'interrupted');
   assert.match(h.saver.status(blobItem.url).message,/MP4ではありません/);
   assert.equal(h.calls.filter(call=>call[0]==='download').length,1);
+});
+
+const processingItem={url:'https://media.test/video.m3u8',type:'hls'};
+function transportFixture(url) {
+  if(url.endsWith('.m3u8'))return new Response('#EXTM3U\n#EXTINF:1,\none.ts\n#EXTINF:1,\ntwo.ts\n#EXT-X-ENDLIST\n');
+  const packet=new Uint8Array(188);packet[0]=0x47;return new Response(packet);
+}
+
+test('cancelling pending media processing closes its processor and never fetches or saves following segments',async t=>{
+  let entered=false,closed=0;
+  const h=harness(t,{granted:['https://media.test/*'],fetch:transportFixture,processorFactory:({signal})=>({
+    validate(){entered=true;return new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(new DOMException('stopped','AbortError')),{once:true}));},
+    close(){closed++;},
+  })});
+  const saving=h.saver.start(processingItem,'Title');await eventually(()=>entered);
+  h.saver.cancel();await saving;
+  const result=h.saver.status(processingItem.url);
+  assert.equal(result.status,'interrupted');assert.match(result.message,/停止/);
+  assert.equal(result.blob,undefined,'unfinished worker output cannot become a retry buffer');
+  assert.equal(closed,1);assert.equal(h.saver.busy,false);
+  assert.deepEqual(h.calls.filter(call=>call[0]==='fetch').map(call=>call[1]),[processingItem.url,'https://media.test/one.ts']);
+  assert.equal(h.calls.some(call=>call[0]==='objectURL'||call[0]==='download'),false);
+});
+
+test('a cancelled operation stays exclusive while a late processing result unwinds, then a new retry owns its result',async t=>{
+  const pending=deferred();let entered=false,factories=0,closed=0;
+  const h=harness(t,{granted:['https://media.test/*'],fetch:transportFixture,processorFactory:()=>{
+    const first=++factories===1;
+    return {
+      async validate(bytes,extension,init,budget){
+        if(first){entered=true;await pending.promise;}
+        return validateMediaSegment(bytes,extension,init,budget);
+      },
+      close(){closed++;},
+    };
+  }});
+  const saving=h.saver.start(processingItem,'Title');await eventually(()=>entered);
+  const cancelled=h.saver.status(processingItem.url);
+  h.saver.cancel();
+  const calls=h.calls.length;await h.saver.start(processingItem,'Other title');
+  assert.equal(h.calls.length,calls,'a second start cannot replace a running operation');
+  assert.equal(h.saver.busy,true);assert.equal(factories,1);
+  pending.resolve();await saving;
+  assert.equal(cancelled.status,'interrupted');assert.equal(cancelled.blob,undefined);
+  assert.equal(h.calls.some(call=>call[0]==='download'),false,'late worker completion after abort cannot save');
+  assert.equal(closed,1);assert.equal(h.saver.busy,false);
+  await h.saver.start(processingItem,'Retry title');
+  const retried=h.saver.status(processingItem.url);
+  assert.notEqual(retried,cancelled);assert.equal(retried.status,'complete');
+  assert.equal(cancelled.status,'interrupted');assert.equal(closed,2);assert.equal(factories,2);
+  assert.equal(h.calls.filter(call=>call[0]==='download').length,1);
+});
+
+test('a processing failure is retryable without saving or reusing unvalidated media',async t=>{
+  let factories=0,closed=0;
+  const h=harness(t,{granted:['https://media.test/*'],fetch:transportFixture,processorFactory:()=>{
+    const first=++factories===1;
+    return {
+      async validate(...args){if(first)throw new Error('synthetic worker failure');return validateMediaSegment(...args);},
+      close(){closed++;},
+    };
+  }});
+  await h.saver.start(processingItem,'Title');
+  const failed=h.saver.status(processingItem.url);
+  assert.equal(failed.status,'interrupted');assert.equal(failed.blob,undefined);
+  assert.equal(closed,1);assert.equal(h.calls.some(call=>call[0]==='download'),false);
+  await h.saver.start(processingItem,'Title');
+  assert.equal(h.saver.status(processingItem.url).status,'complete');
+  assert.equal(closed,2);assert.equal(factories,2);
+  assert.equal(h.calls.filter(call=>call[0]==='fetch'&&call[1]==='https://media.test/one.ts').length,2,'retry fetches and validates the rejected input again');
+});
+
+test('cancelling TS remux cannot download a delayed MP4 result and retry fetches a fresh source',async t=>{
+  const pending=deferred();let entered=false,factories=0,closed=0;
+  const h=harness(t,{granted:['https://media.test/*'],fetch:transportFixture,processorFactory:()=>{
+    const first=++factories===1;
+    return {
+      async validate(...args){return validateMediaSegment(...args);},
+      async remux(){if(first){entered=true;await pending.promise;}return new Blob(['synthetic MP4 result'],{type:'video/mp4'});},
+      close(){closed++;},
+    };
+  }});
+  const saving=h.saver.start(processingItem,'Title','mp4');await eventually(()=>entered);
+  assert.equal(h.saver.status(processingItem.url).status,'converting');
+  h.saver.cancel();pending.resolve();await saving;
+  assert.equal(h.saver.status(processingItem.url).status,'interrupted');
+  assert.equal(h.saver.status(processingItem.url).blob,undefined);
+  assert.equal(h.calls.some(call=>call[0]==='download'),false);assert.equal(closed,1);
+  await h.saver.start(processingItem,'Title','mp4');
+  assert.equal(h.saver.status(processingItem.url).status,'complete');
+  assert.equal(h.saver.status(processingItem.url).extension,'mp4');assert.equal(closed,2);
+  assert.equal(h.calls.filter(call=>call[0]==='fetch'&&call[1]===processingItem.url).length,2);
+});
+
+test('cancelled blob cleanup finishes before a following operation can acquire the saver',async t=>{
+  const cleanup=deferred();let releasing=false,snapshots=0;
+  const h=harness(t,{readBlob:async(url,offset)=>{
+    if(offset===-2){releasing=true;await cleanup.promise;return {released:true};}
+    if(offset===-1){snapshots++;return {size:3,mime:'video/webm',bytes:[]};}
+    return {size:3,mime:'video/webm',bytes:[1,2,3]};
+  },onUpdate:h=>{if(h.saver?.status(blobItem.url)?.status==='fetching')h.saver.cancel();}});
+  const saving=h.saver.start(blobItem,'Title');await eventually(()=>releasing);
+  await h.saver.start(blobItem,'Another title');
+  assert.equal(snapshots,1);assert.equal(h.saver.busy,true);
+  cleanup.resolve();await saving;
+  assert.equal(h.saver.busy,false);assert.equal(h.saver.status(blobItem.url).status,'interrupted');
+  assert.equal(h.calls.some(call=>call[0]==='download'),false);
+});
+
+test('cancellation just before Chrome submission prevents a download and preserves the completed same-format retry buffer',async t=>{
+  let cancelled=false;
+  const h=harness(t,{onUpdate:h=>{
+    if(!cancelled&&h.saver?.status(blobItem.url)?.status==='saving'){cancelled=true;h.saver.cancel();}
+  }});
+  await h.saver.start(blobItem,'Title');
+  const first=h.saver.status(blobItem.url),reads=h.calls.filter(call=>call[0]==='readBlob').length;
+  assert.equal(first.status,'interrupted');assert.equal(first.blob.size,3);
+  assert.equal(h.calls.some(call=>call[0]==='objectURL'||call[0]==='download'),false);
+  await h.saver.start(blobItem,'Title');
+  assert.equal(h.saver.status(blobItem.url).status,'complete');
+  assert.equal(h.calls.filter(call=>call[0]==='readBlob').length,reads,'retry can use the fully validated buffer');
+  assert.equal(h.calls.filter(call=>call[0]==='download').length,1);
+});
+
+test('workspace disposal terminates pending processing and prevents later starts from acquiring new work',async t=>{
+  let entered=false,closed=0;
+  const h=harness(t,{granted:['https://media.test/*'],fetch:transportFixture,processorFactory:({signal})=>({
+    validate(){entered=true;return new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(new DOMException('disposed','AbortError')),{once:true}));},
+    close(){closed++;},
+  })});
+  const saving=h.saver.start(processingItem,'Title');await eventually(()=>entered);
+  h.saver.dispose();await saving;
+  assert.equal(closed,1);assert.equal(h.saver.busy,false);
+  assert.equal(h.saver.status(processingItem.url).status,'interrupted');
+  const calls=h.calls.length;await h.saver.start(blobItem,'Another title');
+  assert.equal(h.calls.length,calls);assert.equal(h.processors.length,1);
+  assert.equal(h.calls.some(call=>call[0]==='objectURL'||call[0]==='download'),false);
 });

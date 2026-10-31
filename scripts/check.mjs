@@ -18,6 +18,7 @@ for(const name of await readdir(new URL('extension/',root))) {
   assert.equal(result.status,0,result.stderr);
   const source=await readFile(path,'utf8');
   for(const m of source.matchAll(/from\s+['"](\.\/[^'"]+)['"]/g)) await readFile(new URL(m[1],path));
+  for(const m of source.matchAll(/new URL\(['"](\.\/[^'"]+)['"],\s*import\.meta\.url\)/g)) await readFile(new URL(m[1],path));
 }
 for(const path of ['workspace.html','workspace.css',manifest.background.service_worker]) await readFile(new URL('extension/'+path,root));
 console.log(`${manifest.name}: manifest, permissions, local module references and JavaScript syntax OK`);
