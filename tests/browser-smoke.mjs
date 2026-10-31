@@ -43,7 +43,14 @@ try {
   }));
   await page.reload();
   if(manifest.name==='VideoHarbor') {
-    await page.locator('#blue').evaluate(el=>{el.poster='/poster.svg';});
+    await page.locator('#blue').evaluate(el=>{
+      el.poster='/poster.svg';
+      const duplicate=el.cloneNode(true);duplicate.id='blue-duplicate';duplicate.hidden=true;
+      duplicate.title='非表示の青いカップ';el.after(duplicate);
+      const config=document.createElement('script');config.type='application/json';
+      config.textContent=JSON.stringify({name:'設定内の青いカップ',sources:[{src:'/clip.webm',type:'video/webm'}]});
+      document.body.append(config);
+    });
     await page.waitForFunction(url=>performance.getEntriesByType('resource').some(entry=>entry.name===url && entry.initiatorType==='video'),origin+'/poster.svg');
   }
   const tab=await worker.evaluate(async origin=>(await chrome.tabs.query({})).find(t=>t.url?.startsWith(origin)),origin);
@@ -88,6 +95,9 @@ try {
       await manager.setViewportSize(previous);await manager.evaluate(({x,y})=>scrollTo(x,y),scroll);
     };
     assert.ok(await manager.locator('.direct-save').count()>=1);assert.ok(await manager.locator('#unsupported-count').textContent());
+    assert.equal(await manager.locator(`.direct-save[data-url="${origin}/clip.webm"]`).count(),1,'one complete resource URL has one save card across visible video, hidden duplicate and JSON configuration');
+    assert.equal(await manager.getByRole('heading',{name:'非表示の青いカップ',exact:true}).count(),0,'the hidden duplicate does not create another video group');
+    assert.equal(await manager.getByRole('heading',{name:'設定内の青いカップ',exact:true}).count(),0,'the JSON occurrence does not create another video group');
     const sameName=manager.locator('#direct-list .video-card').filter({hasText:'clip.webm'});
     assert.equal(await sameName.count(),2,'distinct URLs can have the same file name');
     for(const card of await sameName.all()) {
@@ -102,7 +112,7 @@ try {
     await screenshots('download');
     const blueGroup=manager.locator('.video-group').filter({has:manager.getByRole('heading',{name:'青いカップ',exact:true})});
     assert.equal(await blueGroup.count(),1,'a real video occurrence has one identifiable card');
-    assert.equal(await blueGroup.locator('.video-card').count(),2,'only confirmed sources of one video are grouped');
+    assert.equal(await blueGroup.locator('.video-card').count(),2,'the unique alternate source stays grouped without duplicating shared resources');
     assert.equal(await manager.getByRole('heading',{name:'赤いカップ',exact:true}).count(),1,'same-name CDN files remain different page videos');
     await page.locator('#blue').evaluate(el=>{el.style.outline='2px dotted rgb(77, 88, 99)';});
     await blueGroup.locator('.locate-source').click();
@@ -119,9 +129,19 @@ try {
     await blueGroup.locator('.source-alternatives > summary').click();
     const hlsFormat=manager.locator('.video-card').filter({hasText:'stream.m3u8'}).locator('.output-format');
     await hlsFormat.selectOption('auto');
-    await page.locator('#red').evaluate(el=>el.remove());
+    await page.evaluate(()=>{
+      document.querySelector('#red').remove();document.querySelector('#blue').remove();
+      const duplicate=document.querySelector('#blue-duplicate');duplicate.hidden=false;duplicate.title='再表示した青いカップ';
+    });
     await manager.locator('#scan').click();await manager.waitForFunction(()=>!document.querySelector('#scan').disabled);
     assert.equal(await manager.getByRole('heading',{name:'赤いカップ',exact:true}).count(),0,'a removed page video is no longer described as current');
+    assert.equal(await manager.locator(`.direct-save[data-url="${origin}/clip.webm"]`).count(),1,'rescan keeps the shared resource deduplicated after its original player is removed');
+    const replacementGroup=manager.locator('.video-group').filter({has:manager.getByRole('heading',{name:'再表示した青いカップ',exact:true})});
+    assert.equal(await replacementGroup.count(),1,'the newly visible player supplies the current title');
+    assert.equal(await replacementGroup.locator('.video-card').count(),2,'the replacement player retains its distinct alternate source');
+    await replacementGroup.locator('.locate-source').click();
+    await page.waitForFunction(()=>document.querySelector('#blue-duplicate').style.outline.includes('18, 103, 214'));
+    await manager.bringToFront();
     assert.equal(await hlsFormat.inputValue(),'auto','rescan preserves the selected output format');
     // Arrow navigation keeps focus inside the tablist for consecutive key presses.
     await manager.locator('#download-tab').focus();
