@@ -1,5 +1,14 @@
 # QA — v0.1
 
+## 同じ保存元の動画カード重複を解消 — 2026-10-31
+
+- `npm test`: 300件PASS、失敗・SKIPなし。動画グループの回帰を8件追加し、完全URLの共有・複数frame/config・重なる代替保存元・同名/query違い・入力非破壊・代表出典の整合・現行録画対象の保持を確認。最初の期待変更で既存実装の重複を再現した。
+- `npm run check` / `git diff --check`: PASS。
+- `npm run test:browser`: 隔離Chrome・localhost合成ページでPASS。同じURLの表示中video・非表示clone・JSON設定から保存カードが1枚になること、元videoを削除してcloneを表示した再スキャン後も1枚で、更新されたタイトル・出典確認・代替保存元が使えることを検証。デスクトップと360pxの合成画面も確認。
+- `npm run test:video`: PASS。共有URLの保存カード1枚・録画グループ8件・実録画対象9件を区別して検証し、統合された同origin埋め込みは録画対象selectから明示的に選択。既存のCORS/MSE/srcObject・別origin埋め込み・背景/pause/seek/scroll・OPFS・終了/置換/消失も通過し、保存メディアをffprobe/ffmpegで確認した。
+- 独立レビューで見つかった旧sessionの出典URLとoccurrence IDの不一致を修正し、回帰テストで確認。録画参照は現行videoElementsだけから選ぶ境界を維持。追加の通信・権限・実行時依存なし。
+- 未確認: 利用者の元ページでの修正後追試、実OS picker・人間による聴取と体験。異なる完全URLを同一内容と推測してまとめない。
+
 ## 動画だけの録画 — 2026-10-31 / v0.6.0
 
 - `npm test`: 292件PASS、失敗・SKIPなし。`npm run check`、`git diff --check`: PASS。Chrome116+/MV3・権限・ビルド不要の構成を維持。

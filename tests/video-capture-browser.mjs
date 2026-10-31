@@ -80,13 +80,23 @@ async function scan(manager) {
   await manager.locator('#download-tab').click();await manager.locator('#scan').click();
   await manager.waitForFunction(()=>!document.querySelector('#scan').disabled);
 }
-async function select(manager,title) {
-  await manager.locator('#download-tab').click();
-  const group=manager.locator('.video-group').filter({has:manager.getByRole('heading',{name:title,exact:true})});
-  assert.equal(await group.count(),1,`one actual video group for ${title}: ${JSON.stringify(await manager.locator('.video-title').allTextContents())}`);
-  await group.locator('.record-video-button').click();
+async function select(manager,title,fromSelector=false) {
+  if(fromSelector) {
+    await manager.locator('#record-tab').click();
+    await manager.locator('[name="record-mode"][value="video"]').check();
+    const matches=await manager.locator('#record-video option').evaluateAll((options,title)=>options
+      .filter(option=>option.textContent===title || option.textContent===title+' · 再生中')
+      .map(option=>option.value),title);
+    assert.equal(matches.length,1,`one current video option for ${title}`);
+    await manager.locator('#record-video').selectOption(matches[0]);
+  } else {
+    await manager.locator('#download-tab').click();
+    const group=manager.locator('.video-group').filter({has:manager.getByRole('heading',{name:title,exact:true})});
+    assert.equal(await group.count(),1,`one actual video group for ${title}: ${JSON.stringify(await manager.locator('.video-title').allTextContents())}`);
+    await group.locator('.record-video-button').click();
+  }
   assert.equal(await manager.locator('[name="record-mode"]:checked').inputValue(),'video');
-  assert.match(await manager.locator('#record-video option:checked').textContent(),new RegExp(title));
+  assert.ok([title,title+' · 再生中'].includes(await manager.locator('#record-video option:checked').textContent()),`the selected option is exactly ${title}`);
 }
 async function start(manager) {
   await manager.locator('#start-record').click();
@@ -95,9 +105,9 @@ async function start(manager) {
 async function stopped(manager) {
   await manager.waitForFunction(()=>['ready','saved','error'].includes(document.querySelector('#record-state').dataset.state),{},{timeout:15000});
 }
-async function normalRecording(manager,title,name,{audio=true,color='red',frequency=440,duration=1000}={}) {
+async function normalRecording(manager,title,name,{audio=true,color='red',frequency=440,duration=1000,fromSelector=false}={}) {
   console.log('video-only QA: '+name);
-  await select(manager,title);await manager.locator('#record-audio').setChecked(audio);await start(manager);
+  await select(manager,title,fromSelector);await manager.locator('#record-audio').setChecked(audio);await start(manager);
   assert.equal(await manager.locator('#record-state').getAttribute('data-state'),'recording',(await manager.locator('#record-message').textContent())+' '+JSON.stringify(await manager.evaluate(()=>({error:globalThis.__qaStartError,requests:globalThis.__qaVideoRequests}))));
   await sleep(duration);await manager.locator('#stop-record').click();await stopped(manager);
   assert.equal(await manager.locator('#record-state').getAttribute('data-state'),'ready',await manager.locator('#record-message').textContent());
@@ -151,7 +161,9 @@ try {
   manager.on('dialog',dialog=>dialog.accept());manager.on('pageerror',error=>pageErrors.push(error.message));await manager.waitForFunction(()=>document.querySelector('#count').textContent&&!document.querySelector('#scan').disabled);
   const cdp=await context.newCDPSession(manager);await cdp.send('Browser.setDownloadBehavior',{behavior:'allow',downloadPath:downloadFolder,eventsEnabled:true});
   console.log('video-only QA: workspace and discovery ready');
-  assert.equal(await manager.locator('.record-video-button').count(),9,'real VIDEO elements include URL-less stream and both frames');
+  assert.equal(await manager.locator('.record-video-button').count(),8,'the shared top-page and same-origin frame URL has one video group');
+  assert.equal(await manager.locator('#record-video option').evaluateAll(options=>options.filter(option=>option.value).length),9,'every real VIDEO remains selectable, including URL-less streams and both frames');
+  assert.equal(await manager.locator(`.direct-save[data-url="${origin}/target.webm"]`).count(),1,'the shared top-page and same-origin frame URL has one save card');
 
   console.log('video-only QA: record target with background/pause/seek');
   await select(manager,'赤い対象動画');await screenshot(manager,'prepare');await start(manager);
@@ -176,7 +188,7 @@ try {
   assert.match(await manager.locator('#record-message').textContent(),/取得|制限|保護/);assert.equal(await manager.locator('[name="record-mode"]:checked').inputValue(),'video','CORS failure never changes to whole-tab recording');
   await normalRecording(manager,'CORS許可動画','cors-allowed');
   await normalRecording(manager,'MSE動画','mse-playback',{audio:false});
-  await normalRecording(manager,'同origin埋め込み','same-origin-frame');
+  await normalRecording(manager,'同origin埋め込み','same-origin-frame',{fromSelector:true});
   await normalRecording(manager,'別origin埋め込み','cross-origin-frame');
   await normalRecording(manager,'srcObject動画','src-object');
   assert.equal(await page.evaluate(()=>originalSyntheticStream.getTracks().every(track=>track.readyState==='live')),true,'capture cleanup preserves the original srcObject tracks');
