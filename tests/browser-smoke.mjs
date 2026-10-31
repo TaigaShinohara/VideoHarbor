@@ -42,6 +42,10 @@ try {
     await new Promise(r=>setTimeout(r,400));rec.stop();clearInterval(timer);stream.getTracks().forEach(t=>t.stop());return ready;
   }));
   await page.reload();
+  if(manifest.name==='VideoHarbor') {
+    await page.locator('#blue').evaluate(el=>{el.poster='/poster.svg';});
+    await page.waitForFunction(url=>performance.getEntriesByType('resource').some(entry=>entry.name===url && entry.initiatorType==='video'),origin+'/poster.svg');
+  }
   const tab=await worker.evaluate(async origin=>(await chrome.tabs.query({})).find(t=>t.url?.startsWith(origin)),origin);
   const [manager]=await Promise.all([context.waitForEvent('page'),worker.evaluate(tab=>globalThis.__openWorkspace(tab),tab)]);
   await manager.waitForLoadState();
@@ -71,6 +75,7 @@ try {
     failedOnce=false;
     await manager.locator('#retry').click();await manager.waitForFunction(()=>document.querySelector('#batch').textContent.includes('1件保存完了'));
   } else {
+    assert.equal(await manager.locator('.video-card').filter({hasText:'poster.svg'}).count(),0,'a real video poster load never becomes a video save candidate');
     const assertFocused=async id=>assert.equal(await manager.evaluate(id=>document.activeElement?.id===id,id),true,`${id} has keyboard focus`);
     const screenshots=async label=>{
       if(!process.env.QA_SCREENSHOT)return;

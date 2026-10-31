@@ -1,7 +1,8 @@
-import { mediaKind, mergeItems } from './utils.js';
+import { isImageResource, mediaKind, mergeItems } from './utils.js';
 
 export const DISCOVERY_VERSION = 2;
 const LIMIT = 500, PREVIOUS_LIMIT = 100;
+const isVideoCandidate = item => !isImageResource(item.url,item.mime);
 const priority = (item, previousURLs) => (item.playing ? 100000 : 0)+(item.visible ? 10000 : 0)
   +(item.discovery === 'loaded-history' ? 0 : 1000)+(!previousURLs.has(item.url) ? 100 : 0)
   +({video:5,'player-config':4,metadata:3,embed:3,'loaded-resource':2,link:1}[item.source] || 0);
@@ -13,11 +14,16 @@ const kindFor = item => {
 // Old sessions contain a cumulative URL list with potentially inherited parent
 // frame IDs. Retain those records as previous results, never trust their frame.
 export function migrateDiscovery(state) {
-  if (state.scan?.version === DISCOVERY_VERSION) return state;
-  return {...state,items:[],previousItems:(state.items || []).slice(-PREVIOUS_LIMIT).map(item => {
+  if (state.scan?.version === DISCOVERY_VERSION) {
+    const items = (state.items || []).filter(isVideoCandidate), previousItems = (state.previousItems || []).filter(isVideoCandidate);
+    if (items.length === (state.items || []).length && previousItems.length === (state.previousItems || []).length) return state;
+    return {...state,items,previousItems,scan:{...state.scan,currentCount:items.length,previousCount:previousItems.length}};
+  }
+  const previousItems = (state.items || []).filter(isVideoCandidate).slice(-PREVIOUS_LIMIT).map(item => {
     const {frameId,documentId,occurrences,videoRef,configRef,frameToken,...safe} = item;
     return {...safe,discovery:'previous',legacy:true};
-  }),frames:[],scan:{version:DISCOVERY_VERSION,sequence:0,at:null,currentCount:0,previousCount:Math.min(state.items?.length || 0,PREVIOUS_LIMIT),omitted:0},
+  });
+  return {...state,items:[],previousItems,frames:[],scan:{version:DISCOVERY_VERSION,sequence:0,at:null,currentCount:0,previousCount:previousItems.length,omitted:0},
   notices:[...new Set([...(state.notices || []),...(state.items?.length ? ['以前の候補を前回の結果へ移しました。再スキャンで現在のページを確認してください。'] : [])])]};
 }
 
@@ -30,6 +36,7 @@ export function discoverySnapshot(state, results, now = Date.now()) {
   for (const {result,frameId = 0,documentId} of results) {
     if (!Array.isArray(result?.items)) continue;
     for (const item of result.items) {
+      if (!isVideoCandidate(item)) continue;
       const occurrences = (item.occurrences?.length ? item.occurrences : [{source:item.source,origin:item.source === 'loaded-resource' ? 'performance' : 'dom'}]).map((entry,index) => {
         const occurrence = {...entry,frameToken:result.frameToken,documentURL:result.documentURL || entry.documentURL,frameId,...(documentId ? {documentId} : {}),id:entry.id || `${documentId || frameId}:${index}:${item.url}`};
         if (typeof occurrence.previewDataURL === 'string') {
@@ -66,7 +73,7 @@ export function discoverySnapshot(state, results, now = Date.now()) {
   if (omitted) notices.add(`${omitted}件を省略しました。再生中・表示中・現在のページ・新しい候補を優先して500件まで表示します。`);
   const currentURLs = new Set(items.map(item => item.url));
   const previousItems = [...new Map([...(state.previousItems || []),...(state.items || [])].map(item => [item.url,item])).values()]
-    .filter(item => !currentURLs.has(item.url)).slice(-PREVIOUS_LIMIT).map(item => ({...item,discovery:'previous'}));
+    .filter(item => isVideoCandidate(item) && !currentURLs.has(item.url)).slice(-PREVIOUS_LIMIT).map(item => ({...item,discovery:'previous'}));
   return {items,previousItems,frames:frames.slice(0,100),notices:[...notices],scanned:true,
     scan:{version:DISCOVERY_VERSION,sequence:(state.scan?.sequence || 0)+1,at:now,currentCount:items.length,previousCount:previousItems.length,omitted}};
 }

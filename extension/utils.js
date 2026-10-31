@@ -18,6 +18,16 @@ export function mediaKind(url, mime = '') {
   if (/\.(mp4|webm|mov|m4v|ogv|ogg)$/.test(path) || /^video\//i.test(mime)) return 'direct';
   return 'unknown';
 }
+export function isImageResource(url, mime = '') {
+  if (/^image\//i.test(mime.trim())) return true;
+  try {
+    const parsed = new URL(url);
+    if (!/^https?:$/.test(parsed.protocol)) return false;
+    let path = parsed.pathname;
+    try { path = decodeURIComponent(path); } catch { /* Match the literal path if encoding is malformed. */ }
+    return /\.(avif|bmp|gif|heic|heif|ico|jpe?g|jfif|png|svg|tiff?|webp)$/i.test(path);
+  } catch { return false; }
+}
 export function allowedURL(value, kind) {
   try {
     const u = new URL(value);
