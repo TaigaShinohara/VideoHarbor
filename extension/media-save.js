@@ -1,4 +1,6 @@
-import { prepareHLS, downloadHLS } from './hls.js';
+import { prepareHLS } from './hls.js';
+import { prepareDASH } from './dash.js';
+import { assembleStream } from './stream-assembly.js';
 import { sanitizePart, fileLabel, publicError } from './utils.js';
 
 export function originPattern(url) {
@@ -21,6 +23,7 @@ export class MediaSaver {
   status(url) {return this.results.get(url);}
   async missing(urls) {
     const origins=[...new Set(urls.map(originPattern))];
+    if(origins.length>32)throw new Error('配信元のサイトが多すぎます。最大32サイトまでです。');
     return (await Promise.all(origins.map(async origin=>await chrome.permissions.contains({origins:[origin]}) ? null : origin))).filter(Boolean);
   }
   async fetchResource(url,{signal,range}={}) {
@@ -52,13 +55,13 @@ export class MediaSaver {
       const signal=this.controller.signal;
       signal.throwIfAborted();
       let blob=previous?.blob, extension=previous?.extension;
-      if(!blob && item.type==='hls') {
-        const plan=await prepareHLS(item.url,this.fetchResource.bind(this),{signal});
-        const missing=await this.missing(plan.segments.map(s=>s.url));
+      if(!blob && ['hls','dash'].includes(item.type)) {
+        const plan=await (item.type==='hls' ? prepareHLS : prepareDASH)(item.url,this.fetchResource.bind(this),{signal});
+        const missing=await this.missing((plan.tracks ? plan.tracks.flatMap(t=>t.segments) : plan.segments).map(s=>s.url));
         if(missing.length)throw new SitePermissionError(missing);
         result.audioUnverified=!plan.fromMaster;
-        result.status='fetching';result.message=result.audioUnverified ? '単独のHLSリストを取得中。別配信の音声を判別できないため、音声を含まない場合があります。' : '分割された動画を取得しています。';this.emit();
-        blob=await downloadHLS(plan,this.fetchResource.bind(this),{signal,onProgress:progress=>{
+        result.status='fetching';result.message=result.audioUnverified ? '単独のHLSリストを取得中。別配信の音声を判別できないため、音声を含まない場合があります。' : plan.tracks?.length===2 ? '映像と音声を取得して、MP4へまとめています。' : '分割された動画を取得しています。';this.emit();
+        blob=await assembleStream(plan,this.fetchResource.bind(this),{signal,onProgress:progress=>{
           Object.assign(result,progress);this.emit();
         }});
         extension=plan.extension;

@@ -1,5 +1,20 @@
 # QA — v0.1
 
+## DASH・別音声MP4の保存拡張 — 2026-10-31 / v0.3.0
+
+- `npm test`: 120件PASS、失敗・SKIPなし。このMacではffmpeg/ffprobeが利用可能なため、実MP4合成試験も実行した。`npm run check`と`git diff --check`もPASS。
+- DASH計画19件：静的単一Period、BaseURL/区間設定の継承、Number/Time/RepresentationID/Bandwidthの展開、有限Timelineと負のrepeat、SegmentListのrange、最高対応画質・標準音声、未対応画質からの選択、合計5000区間を確認。DRM/live/WebM/開始補正/未知XML機能/危険URL/不正range/上限/停止は明示失敗。
+- HLS30件：既存機能に加え、fMP4別音声とDEFAULT選択、ネストした音声参照、未対応構造から対応する下位画質への選択、許可/HTTP/network/キャンセル時は下位候補へ迂回しないこと、5階層・64配信リストの上限を確認。
+- MP4合成12件：track IDの衝突回避、trex/tfhd/mfhd、異なるtimescale、編集情報、B-frame composition offsetを含む時刻、sample byte保持、古いsidx/mfra除去、暗号化/外部参照/絶対offset/破損/逆行/容量の拒否。実ffmpeg製の分離HLSとDASHを合成し、両trackと全編デコード成功も確認。
+- 共通assembler3件：映像・音声の合計容量上限、トラック間の停止、従来TSのbyte保持。保存controller15件にはDASHの段階的なサイト許可、MPD取得中停止、初期化データのstream停止、32サイト上限を追加。collector12件では既知初期化設定の厳密JSONとJSON文字列、HTML escape、videojs単独設定、文字列/コメント/正規表現内の偽設定、iframeの動画/ページ分離を確認。
+- `npm run test:embedded`: 最終状態で隔離Chrome・localhost合成試験PASS。従来TS/fMP4/blobに加え、静的DASHと別音声HLSを本物のcollector→fetch→合成→Chromeダウンロードで保存。実downloadのcomplete/exists/filenameを照合し、ffprobeで映像・音声の両track、両方の実packet長3.8〜4.5秒、開始時刻差100ms未満を確認。ffmpegで両trackを全編デコードし終了コード0。既知player JSONと動画iframeの実注入、許可拒否/再試行、360px固定停止、部分ファイルを保存しない停止も維持。
+- 最初の追加追試では旧TSのaudio stream推定durationが3.733秒となり、4秒の判定に失敗した。配信元から保存した実packet列の時刻・長さを測る方法へ試験を修正した。閾値を緩めず、その方法で旧TSを含め全保存ケースがPASSした。
+- 保存計画のURL文字列増幅も制限。HLSのマスター候補群・各media playlist、DASHの候補BaseURL群・各trackのURL文字数を追加時に4 MiBで制限し、選択2trackは最大8 MiB。DASHの単一URL展開も生成前に長さを制限する。上限超過で別候補を繰り返し探索しないことを回帰試験で確認。
+
+追加の必須権限・実行時依存・解析送信なし。必要サイトのoptional許可だけを使用。Nativeのサイト権限確認境界は従来同様模擬し、それ以外の取得・合成・保存は実処理。個人Chromeプロファイルと実サイトのメディアは使わず、実サイトへの個別取得も行っていない。
+
+未確認：実サイトごとの互換性、本人による追加サイト許可、聴取品質と人間のAV同期評価、実OS picker・実音声・最大容量/長時間の実測。未対応：暗号化・DRM・ライブ、TS/AACの別音声、HLS不連続/別映像/字幕、DASH SegmentBase/複数Period/開始補正/WebM、未対応MP4トラック構成。合成成功と任意サイトでの保存成功・権利許諾は別とする。
+
 ## 埋め込み動画の保存拡張 — 2026-10-31 / v0.2.0
 
 - `npm test`: 67件PASS、失敗・SKIPなし。動画タグ・遅延属性・メタデータ・構造化データ・型付きJSON設定、危険URL排除、候補上限、再スキャンの型保持を確認。

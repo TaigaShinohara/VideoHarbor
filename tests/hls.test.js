@@ -42,9 +42,9 @@ test('HLS: finite TS playlists resolve relative URLs and assemble bytes in playl
   assert.deepEqual(progress.at(-1), { bytesReceived: 376, completed: 2, total: 2 });
 });
 
-test('HLS: selects highest bandwidth self-contained variant, preserving commas in CODECS', async () => {
-  const h = resources({ [base]: ['#EXTM3U', '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",URI="audio.m3u8"',
-    '#EXT-X-STREAM-INF:BANDWIDTH=4000,AUDIO="audio"', 'external.m3u8',
+test('HLS: selects highest supported variant, preserving commas in CODECS', async () => {
+  const h = resources({ [base]: ['#EXTM3U', '#EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID="other",URI="other.m3u8"',
+    '#EXT-X-STREAM-INF:BANDWIDTH=4000,VIDEO="other"', 'external.m3u8',
     '#EXT-X-STREAM-INF:BANDWIDTH=1000,CODECS="avc1.4d401f,mp4a.40.2"', 'low.m3u8',
     '#EXT-X-STREAM-INF:BANDWIDTH=2000,RESOLUTION=1280x720', 'high.m3u8'].join('\n'),
   'https://media.test/path/high.m3u8': one });
@@ -61,11 +61,29 @@ test('HLS: a declared in-band audio group does not require a separate audio file
   assert.equal((await prepareHLS(base, h.fetch)).extension, 'ts');
 });
 
-test('HLS: external audio, video or subtitles are rejected rather than dropped', async () => {
-  for (const type of ['AUDIO', 'VIDEO', 'SUBTITLES']) {
+test('HLS: unsupported external video or subtitles are rejected rather than dropped', async () => {
+  for (const type of ['VIDEO', 'SUBTITLES']) {
     const h = resources({ [base]: `#EXTM3U\n#EXT-X-MEDIA:TYPE=${type},GROUP-ID="external",URI="track.m3u8"\n#EXT-X-STREAM-INF:BANDWIDTH=1,${type}="external"\nchild.m3u8` });
     await assert.rejects(prepareHLS(base, h.fetch), /別配信/);
     assert.equal(h.calls.length, 1);
+  }
+});
+
+test('HLS: selects default external fMP4 audio and plans both tracks', async()=>{
+  const h=resources({[base]:'#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="other",URI="other.m3u8"\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="main",DEFAULT=YES,LANGUAGE="ja",URI="audio.m3u8"\n#EXT-X-STREAM-INF:BANDWIDTH=100,AUDIO="a"\nvideo.m3u8',
+    'https://media.test/path/video.m3u8':vod('#EXT-X-MAP:URI="video-init.mp4"','#EXTINF:2,','video.m4s'),
+    'https://media.test/path/audio.m3u8':vod('#EXT-X-MAP:URI="audio-init.mp4"','#EXTINF:2.02,','audio.m4s')});
+  const plan=await prepareHLS(base,h.fetch);
+  assert.equal(plan.audioLanguage,'ja');assert.equal(plan.extension,'mp4');assert.equal(plan.fromMaster,true);
+  assert.deepEqual(plan.tracks.map(t=>t.type),['video','audio']);assert.equal(plan.segments.length,4);
+  assert.match(plan.tracks[1].segments[0].url,/audio-init.mp4$/);
+});
+
+test('HLS: external TS audio, nested audio and mismatched durations fail explicitly',async()=>{
+  const master='#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",URI="audio.m3u8"\n#EXT-X-STREAM-INF:BANDWIDTH=100,AUDIO="a"\nvideo.m3u8';
+  for(const audio of [one,master,vod('#EXT-X-MAP:URI="init.mp4"','#EXTINF:20,','audio.m4s')]) {
+    const h=resources({[base]:master,'https://media.test/path/video.m3u8':vod('#EXT-X-MAP:URI="init.mp4"','#EXTINF:2,','video.m4s'),'https://media.test/path/audio.m3u8':audio});
+    await assert.rejects(prepareHLS(base,h.fetch),/MP4|複数階層|長さ/);
   }
 });
 
@@ -213,4 +231,77 @@ test('HLS: AbortSignal cancels a stalled reader and prevents following requests'
   await assert.rejects(pending, { name: 'AbortError' });
   assert.equal(cancelled, true); assert.equal(calls, 1);
   await assert.rejects(prepareHLS(base, async () => { throw new Error('must not fetch'); }, { signal: controller.signal }), { name: 'AbortError' });
+});
+
+test('HLS: an unsupported high TS plus external AAC variant falls back to a lower self-contained TS',async()=>{
+  const h=resources({[base]:'#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="main",URI="audio.m3u8"\n#EXT-X-STREAM-INF:BANDWIDTH=2000,AUDIO="a",CODECS="avc1.4d401e,mp4a.40.2"\nhigh.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nlow.m3u8',
+    'https://media.test/path/high.m3u8':one,'https://media.test/path/low.m3u8':one});
+  const plan=await prepareHLS(base,h.fetch);
+  assert.equal(plan.extension,'ts');assert.equal(plan.bandwidth,1000);assert.equal(plan.fromMaster,true);
+  assert.deepEqual(h.calls.map(call=>call.url),[base,'https://media.test/path/high.m3u8','https://media.test/path/low.m3u8']);
+});
+
+test('HLS: the highest compatible external fMP4 video and audio remain preferred to lower TS',async()=>{
+  const h=resources({[base]:'#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="main",DEFAULT=YES,URI="audio.m3u8"\n#EXT-X-STREAM-INF:BANDWIDTH=2000,AUDIO="a"\nhigh.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nlow.m3u8',
+    'https://media.test/path/high.m3u8':vod('#EXT-X-MAP:URI="video-init.mp4"','#EXTINF:2,','video.m4s'),
+    'https://media.test/path/audio.m3u8':vod('#EXT-X-MAP:URI="audio-init.mp4"','#EXTINF:2,','audio.m4s')});
+  const plan=await prepareHLS(base,h.fetch);
+  assert.equal(plan.extension,'mp4');assert.equal(plan.bandwidth,2000);assert.equal(plan.tracks.length,2);
+  assert.equal(h.calls.some(call=>call.url.endsWith('low.m3u8')),false);
+});
+
+test('HLS: fallback only handles unsupported structure, preserving permission, network, HTTP and cancellation failures',async()=>{
+  const master='#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2000\nhigh.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nlow.m3u8';
+  for(const failure of [Object.assign(new Error('permission'),{origins:['https://media.test/*']}),new TypeError('network'),new DOMException('cancel','AbortError'),new Response('denied',{status:403})]) {
+    const h=resources({[base]:master,'https://media.test/path/high.m3u8':failure,'https://media.test/path/low.m3u8':one});
+    await assert.rejects(prepareHLS(base,h.fetch),cause=>failure instanceof Response ? /HTTP 403/.test(cause.message) : cause===failure);
+    assert.equal(h.calls.some(call=>call.url.endsWith('low.m3u8')),false);
+  }
+  const malformed=resources({[base]:master,'https://media.test/path/high.m3u8':vod('#EXTINF:NaN,','bad.ts'),'https://media.test/path/low.m3u8':one});
+  await assert.rejects(prepareHLS(base,malformed.fetch),/区間長/);assert.equal(malformed.calls.length,2);
+});
+
+test('HLS: unsupported live/encryption/discontinuity variants can yield a lower clear finite variant',async()=>{
+  const master='#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2000\nhigh.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nlow.m3u8';
+  for(const high of ['#EXTM3U\n#EXTINF:2,\nlive.ts',vod('#EXT-X-KEY:METHOD=AES-128,URI="key"','#EXTINF:2,','encrypted.ts'),vod('#EXT-X-DISCONTINUITY','#EXTINF:2,','changed.ts')]) {
+    const h=resources({[base]:master,'https://media.test/path/high.m3u8':high,'https://media.test/path/low.m3u8':one});
+    const plan=await prepareHLS(base,h.fetch);assert.equal(plan.bandwidth,1000);assert.equal(h.calls.length,3);
+  }
+});
+
+test('HLS: branch ancestry detects cycles without suppressing a separate valid sibling',async()=>{
+  const h=resources({[base]:'#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2000\ncycle.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nlow.m3u8',
+    'https://media.test/path/cycle.m3u8':'#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2000\nlist.m3u8',
+    'https://media.test/path/low.m3u8':one});
+  const plan=await prepareHLS(base,h.fetch);assert.equal(plan.bandwidth,1000);assert.equal(h.calls.length,3);
+});
+
+test('HLS: branching fallback has a bounded manifest request budget',async()=>{
+  const master='#EXTM3U\n'+Array.from({length:100},(_,i)=>`#EXT-X-STREAM-INF:BANDWIDTH=${1000-i}\nvariant-${i}.m3u8`).join('\n');
+  let calls=0;
+  await assert.rejects(prepareHLS(base,async url=>{calls++;return new Response(url===base ? master : '#EXTM3U\n#EXTINF:1,\nlive.ts');}),/最大64件/);
+  assert.equal(calls,64);
+});
+
+test('HLS: repeated nested reference to the same external audio preserves a single selected audio track',async()=>{
+  const h=resources({[base]:'#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="main",URI="audio.m3u8"\n#EXT-X-STREAM-INF:BANDWIDTH=2000,AUDIO="a"\ninner.m3u8',
+    'https://media.test/path/inner.m3u8':'#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="main",URI="audio.m3u8"\n#EXT-X-STREAM-INF:BANDWIDTH=1800,AUDIO="a"\nvideo.m3u8',
+    'https://media.test/path/video.m3u8':vod('#EXT-X-MAP:URI="video-init.mp4"','#EXTINF:2,','video.m4s'),
+    'https://media.test/path/audio.m3u8':vod('#EXT-X-MAP:URI="audio-init.mp4"','#EXTINF:2,','audio.m4s')});
+  const plan=await prepareHLS(base,h.fetch);assert.equal(plan.tracks.length,2);assert.equal(plan.segments.length,4);
+  assert.equal(h.calls.filter(call=>call.url.endsWith('audio.m3u8')).length,1);
+});
+
+test('HLS: expanded master and media URLs have an incremental memory budget without fallback',async()=>{
+  const longBase=`https://media.test/${'x'.repeat(60000)}/list.m3u8`;
+  for(const audio of [false,true]) {
+    const master='#EXTM3U\n'+(audio ? '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="main",URI="audio.m3u8"\n' : '')+
+      Array.from({length:100},(_,i)=>`#EXT-X-STREAM-INF:BANDWIDTH=${1000-i}${audio ? ',AUDIO="a"' : ''}\nv${i}.m3u8`).join('\n');
+    const h=resources({[longBase]:master});
+    await assert.rejects(prepareHLS(longBase,h.fetch),/配信URLの合計.*4 MiB/);assert.equal(h.calls.length,1);
+  }
+  const h=resources({[base]:`#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2000\n${longBase}\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nlow.m3u8`,
+    [longBase]:vod(...Array.from({length:100},(_,i)=>`#EXTINF:1,\npart-${i}.ts`)),
+    'https://media.test/path/low.m3u8':one});
+  await assert.rejects(prepareHLS(base,h.fetch),/配信URLの合計.*4 MiB/);assert.equal(h.calls.length,2,'a memory limit must not try the next variant');
 });

@@ -192,3 +192,66 @@ test('fetches use only granted origins, reject redirects and pass explicit range
   await assert.rejects(()=>h.saver.fetchResource('https://other.test/segment'),error=>error.origins[0]==='https://other.test/*');
   assert.equal(h.calls.filter(call=>call[0]==='fetch').length,1);
 });
+
+const dashItem={url:'https://manifest.test/player.mpd',type:'dash'};
+const splitDASH=`<MPD type="static" mediaPresentationDuration="PT2S"><Period>
+  <AdaptationSet contentType="video" mimeType="video/mp4"><SegmentTemplate duration="2" initialization="https://video.test/init-$RepresentationID$.mp4" media="https://video.test/$Number$.m4s"/><Representation id="v" bandwidth="1000"/></AdaptationSet>
+  <AdaptationSet contentType="audio" mimeType="audio/mp4"><SegmentTemplate duration="2" initialization="https://audio.test/init-$RepresentationID$.mp4" media="https://audio.test/$Number$.m4s"/><Representation id="a" bandwidth="128"/></AdaptationSet>
+</Period></MPD>`;
+const dashResponse=()=>new Response(splitDASH,{headers:{'content-type':'application/dash+xml'}});
+
+test('DASH permission retries request the MPD and both selected track hosts before any segment fetch',async t=>{
+  const h=harness(t,{fetch:async url=>url===dashItem.url ? dashResponse() : new Response('not available',{status:403})});
+  await h.saver.start(dashItem,'Title');
+  assert.equal(h.saver.status(dashItem.url).status,'permission');
+  assert.deepEqual(h.saver.status(dashItem.url).origins,['https://manifest.test/*']);
+  assert.equal(h.calls.some(call=>call[0]==='fetch'),false);
+  const firstRetry=h.saver.start(dashItem,'Title');
+  assert.equal(h.calls.at(-1)[0],'request','MPD permission is requested before yielding');await firstRetry;
+  assert.equal(h.saver.status(dashItem.url).status,'permission');
+  assert.deepEqual(h.saver.status(dashItem.url).origins,['https://video.test/*','https://audio.test/*']);
+  assert.deepEqual(h.calls.filter(call=>call[0]==='fetch').map(call=>call[1]),[dashItem.url]);
+  const secondRetry=h.saver.start(dashItem,'Title');
+  assert.equal(h.calls.at(-1)[0],'request','track permissions are requested before yielding');await secondRetry;
+  assert.deepEqual([...h.granted].sort(),['https://audio.test/*','https://manifest.test/*','https://video.test/*']);
+  assert.equal(h.saver.status(dashItem.url).status,'interrupted');
+  assert.match(h.saver.status(dashItem.url).message,/403/,'the actual init failure is retained');
+  assert.ok(h.calls.some(call=>call[0]==='fetch' && call[1]==='https://video.test/init-v.mp4'));
+  assert.equal(h.calls.some(call=>call[0]==='download'),false,'a failed init cannot create a purported completed MP4');
+});
+
+test('DASH cancellation during MPD fetch aborts that request and does not fetch tracks or save',async t=>{
+  let entered=false,requestSignal;
+  const h=harness(t,{granted:['https://manifest.test/*'],fetch:async(url,{signal})=>{
+    entered=true;requestSignal=signal;
+    return new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(new DOMException('cancelled','AbortError')),{once:true}));
+  }});
+  const preparing=h.saver.start(dashItem,'Title');await eventually(()=>entered);
+  h.saver.cancel();await preparing;
+  assert.equal(requestSignal.aborted,true);
+  assert.equal(h.saver.status(dashItem.url).status,'interrupted');
+  assert.match(h.saver.status(dashItem.url).message,/停止/);
+  assert.equal(h.calls.filter(call=>call[0]==='fetch').length,1);
+  assert.equal(h.calls.some(call=>call[0]==='download'),false);
+});
+
+test('DASH cancellation during a stalled init cancels its reader and prevents audio/fragment fetches',async t=>{
+  let entered=false,cancelled=false;
+  const h=harness(t,{granted:['https://manifest.test/*','https://video.test/*','https://audio.test/*'],fetch:async url=>url===dashItem.url ? dashResponse() : new Response(new ReadableStream({start(){entered=true;},cancel(){cancelled=true;}}))});
+  const fetching=h.saver.start(dashItem,'Title');await eventually(()=>entered);
+  assert.equal(h.saver.status(dashItem.url).status,'fetching');
+  assert.equal(h.saver.status(dashItem.url).audioUnverified,false,'DASH does not inherit standalone HLS uncertainty');
+  h.saver.cancel();await fetching;
+  assert.equal(cancelled,true);assert.equal(h.saver.status(dashItem.url).status,'interrupted');
+  assert.deepEqual(h.calls.filter(call=>call[0]==='fetch').map(call=>call[1]),[dashItem.url,'https://video.test/init-v.mp4']);
+  assert.equal(h.calls.some(call=>call[0]==='download'),false);
+});
+
+test('media host preflight rejects more than 32 distinct origins before permission queries',async t=>{
+  const h=harness(t);
+  await assert.rejects(h.saver.missing(Array.from({length:33},(_,i)=>`https://cdn${i}.test/segment.m4s`)),/32/);
+  assert.equal(h.calls.length,0);
+  const missing=await h.saver.missing(Array.from({length:64},(_,i)=>`https://same.test/segment-${i}.m4s`));
+  assert.deepEqual(missing,['https://same.test/*'],'segment count does not multiply host requests');
+  assert.equal(h.calls.filter(call=>call[0]==='contains').length,1);
+});
