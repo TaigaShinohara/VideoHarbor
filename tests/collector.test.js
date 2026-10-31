@@ -134,3 +134,93 @@ test('collector keeps stream hints on extensionless data attributes and grouped 
   assert.equal(bySuffix(result,'video-endpoint').mime,'video/mp4');
   assert.ok(!result.items.some(item => item.url.startsWith('https://embed.test/')));
 });
+
+test('collector parses strict JSON in known player assignments and setup calls without running JavaScript',t => {
+  const result = scan(t,documentFor([
+    node('script',{}, {textContent:`
+      window.__PLAYER_CONFIG__ = {"sources":[{"file":"/assigned.mp4"}]};
+      window.__INITIAL_STATE__ = {"player":{"hlsManifestUrl":"/hls-endpoint"}};
+      jwplayer("example-player").setup({"playlist":[{"sources":[{"file":"/setup.webm"}]}]});
+      jwplayer('example-player').load([{"file":"/loaded.mp4"}]);
+      new Playerjs({"file":"/playerjs.mp4"});
+      new Clappr.Player({"sources":["/clappr.mp4"]});
+      videojs("example-player", {"sources":[{"src":"/videojs.mp4"}]});
+      globalThis.__collectorMustNotExecute = true;
+    `}),
+    node('script',{}, {textContent:'videojs("another-player", {"sources":[{"src":"/standalone-videojs.mp4"}]});'}),
+  ]));
+  assert.deepEqual(result.items.map(item => new URL(item.url).pathname).sort(),['/assigned.mp4','/clappr.mp4','/hls-endpoint','/loaded.mp4','/playerjs.mp4','/setup.webm','/standalone-videojs.mp4','/videojs.mp4']);
+  assert.equal(bySuffix(result,'hls-endpoint').mime,'application/vnd.apple.mpegurl');
+  assert.equal(globalThis.__collectorMustNotExecute,undefined);
+});
+
+test('collector reads known JSON strings and HTML-escaped URLs as data',t => {
+  const parsed = JSON.stringify({sources:[{file:'/parsed.mp4?one=1&two=2'}]});
+  const result = scan(t,documentFor([
+    node('script',{}, {textContent:`window.playerConfig = JSON.parse('${parsed}');`}),
+    node('script',{}, {textContent:`window.videoConfig = JSON.parse(${JSON.stringify(JSON.stringify({sources:[{src:'/quoted.webm'}]}))});`}),
+    node('script',{}, {textContent:`window.__VIDEO_DATA__ = ${JSON.stringify(JSON.stringify({videoUrl:'/json-string.mp4'}))};`}),
+    node('script',{}, {textContent:'window.playerData = {&quot;sources&quot;:[{&quot;src&quot;:&quot;/encoded.mp4?one=1&amp;two=2&quot;}]};'}),
+    node('video',{'data-video-src':'/html.mp4?one=1&amp;two=2'}),
+    node('script',{type:'application/json'}, {textContent:JSON.stringify({hls:'/master?one=1&amp;two=2',dashManifestUrl:'/dash-endpoint'})}),
+  ]));
+  assert.equal(result.items.length,7);
+  for (const filename of ['parsed.mp4','encoded.mp4','html.mp4']) {
+    const item = result.items.find(item => new URL(item.url).pathname === '/'+filename);
+    assert.equal(new URL(item.url).search,'?one=1&two=2');
+  }
+  assert.ok(bySuffix(result,'quoted.webm'));
+  assert.ok(bySuffix(result,'json-string.mp4'));
+  assert.equal(result.items.find(item => new URL(item.url).pathname === '/master').mime,'application/vnd.apple.mpegurl');
+  assert.equal(bySuffix(result,'dash-endpoint').mime,'application/dash+xml');
+});
+
+test('collector ignores executable objects, fake player setup in strings/comments/regexp and unrelated state',t => {
+  const result = scan(t,documentFor([
+    node('script',{}, {textContent:`
+      const example = 'window.playerConfig = {"file":"/string.mp4"};';
+      const pattern = /window.playerConfig = {"file":"regexp.mp4"};/;
+      // window.videoData = {"file":"/line-comment.mp4"};
+      /* jwplayer("example-player").setup({"file":"/block-comment.mp4"}); */
+      const template = \`window.__PLAYER_CONFIG__ = {"file":"/template.mp4"};\`;
+      unrelatedState = {"url":"/unrelated.mp4"};
+      window.playerConfig = {file:"/not-json.mp4"};
+      window.videoConfig = {"file":function(){ globalThis.__collectorMustNotExecute = true; return "/function.mp4"; }};
+      window.__PLAYER_CONFIG__ = {"sources":[{"file":"/real.mp4?brace={a}"}]};
+    `}),
+  ]));
+  assert.equal(result.items.length,1);
+  assert.equal(new URL(result.items[0].url).pathname,'/real.mp4');
+  assert.equal(globalThis.__collectorMustNotExecute,undefined);
+});
+
+test('collector keeps VideoObject embed pages as frames and discovers media iframe src',t => {
+  const aboutDocument = documentFor([node('video',{'src':'/about-blank.mp4'})]);
+  const srcdocDocument = documentFor([node('video',{'src':'/srcdoc.mp4'})]);
+  const result = scan(t,documentFor([
+    node('script',{type:'application/ld+json'},{textContent:JSON.stringify({'@type':'VideoObject',embedUrl:'https://player.test/embed',contentUrl:'/original.mp4'})}),
+    node('iframe',{src:'https://media.test/embedded.mp4?one=1&amp;two=2'}),
+    node('iframe',{'data-src':'https://media.test/stream.m3u8'}),
+    node('iframe',{src:'about:blank'},{contentDocument:aboutDocument}),
+    node('iframe',{srcdoc:'<video src="/srcdoc.mp4"></video>'},{contentDocument:srcdocDocument}),
+  ]));
+  assert.equal(result.items.length,5);
+  assert.deepEqual(result.frames.map(frame => frame.url),['https://player.test/embed']);
+  assert.equal(result.items.find(item => item.url.startsWith('https://media.test/embedded.mp4')).url,'https://media.test/embedded.mp4?one=1&two=2');
+  assert.ok(bySuffix(result,'about-blank.mp4'));
+  assert.ok(bySuffix(result,'srcdoc.mp4'));
+});
+
+test('collector bounds inline player parsing and does not spend JSON budget on unrelated JavaScript',t => {
+  const result = scan(t,documentFor([
+    node('script',{}, {textContent:'const unrelated = "'+'a'.repeat(524289)+'";'}),
+    node('script',{}, {textContent:Array.from({length:66},(_,i) => `window.playerConfig = {"file":"/config${i}.mp4"};`).join('\n')}),
+  ]));
+  assert.equal(result.items.length,64);
+  assert.ok(result.notices.some(notice => notice.includes('動画設定')));
+  const oversized = scan(t,documentFor([
+    node('script',{}, {textContent:'window.playerConfig = '+JSON.stringify({padding:'a'.repeat(524289),file:'/large.mp4'})}),
+  ]));
+  assert.equal(oversized.items.length,0);
+  assert.ok(oversized.notices.some(notice => notice.includes('動画設定')));
+});
