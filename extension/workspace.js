@@ -59,9 +59,7 @@ function updateSummary() {
   $('scan').disabled=busy || Boolean(recorder?.busy);
   document.body.classList.toggle('scanning',loading);
   $('empty-scan').disabled=busy || Boolean(recorder?.busy);
-  $('download-footer').hidden=!batch.total;
-  const batchText=batch.total ? `今回 ${batch.total}件中 ${batch.complete}件保存完了 · ${batch.interrupted}件中断${batch.active ? ` · ${batch.active}件処理中` : ''}` : '';
-  if($('batch').textContent!==batchText)$('batch').textContent=batchText;
+  $('download-footer').hidden=!batch.active && !batch.interrupted;
   $('cancel').hidden=!batch.active;
   $('retry').hidden=!batch.interrupted || batch.active > 0;
   $('retry').disabled=busy;
