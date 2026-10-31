@@ -65,3 +65,7 @@
 - 隔離Chromeのbrowser smoke/embedded browser PASS。既存v0.4の出力形式・TS→MP4を含め、直接/HLS/DASH/別音声/blob保存を回帰。通常・別origin許可済み・srcdoc iframeの実allFrames収集も確認。
 - dev用の `npm run qa:ux` と [UX-MANUAL.md](UX-MANUAL.md) を用意した。合成動画はMac上で生成し、localhostだけに配信。別担当が実起動・UTF-8・動画差異・range・固定route/メソッド・終了時の自分のtemp消去まで確認した。
 - 実OS picker/権限・実音声の聴取・実ユーザーフォルダ/Finder・30分/容量/背景の長時間実測・Chrome116本体・実スクリーンリーダー・本人の理解は未確認。本人の誘導なし比較が残るため、全体の体験確認は完了扱いにしない。コード実装と自動/AI確認の完了を別に記録する。
+
+### 最終の画面切替確認
+
+結果を再生したまま保存画面へ移る場合と、getFile読込中に移る場合も確認した。画面を離れると再生操作の世代を無効化してpauseし、URL/データは保持する。遅延成功・拒否の2回帰を追加し、独立再審査で必須指摘なし。最終の全単体試験199件PASS、browser smoke・静的・差分確認PASS。

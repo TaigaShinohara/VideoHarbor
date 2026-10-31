@@ -24,6 +24,10 @@ export class RecordingResultView {
     window.addEventListener('resize',()=>{if(!this.player.hidden)this.fitPlayer(false);});
   }
   explain(text) {this.message.textContent=text;this.message.hidden=false;}
+  pausePlayback() {
+    this.operation++;this.player.pause();this.loading=false;
+    this.play.disabled=this.controller.busy || !this.controller.snapshot().resultPlaybackAvailable;
+  }
   clear() {
     this.operation++;
     this.player.pause();this.player.removeAttribute('src');this.player.load();this.player.hidden=true;

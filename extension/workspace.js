@@ -172,6 +172,7 @@ function showView(view, focus=true) {
   if(view==='record' && mediaSaver.busy){error(new Error('動画の保存が終わってから録画を開始してください。'));return;}
   if(view !== 'record' && recorder?.busy) { error(new Error('録画・保存中はこの画面で停止と状態を確認してください。')); return; }
   const record=view === 'record';
+  if(!record)recordingResultView?.pausePlayback();
   $('download-view').hidden=record;$('record-view').hidden=!record;
   $('download-tab').setAttribute('aria-selected',String(!record));$('record-tab').setAttribute('aria-selected',String(record));
   $('download-tab').tabIndex=record ? -1 : 0;$('record-tab').tabIndex=record ? 0 : -1;
