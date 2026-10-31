@@ -1,7 +1,8 @@
-import { collect } from './collector.js';
+import { collect, locateSourceElement, inspectSourceDocument } from './collector.js';
+import { discoverySnapshot, migrateDiscovery, DISCOVERY_VERSION } from './discovery.js';
 import { readPageBlob } from './page-blob.js';
 import { validateOutputFormat } from './output-format.js';
-import { allowedURL, mediaKind, mergeItems, downloadName, summarizeJobs, publicError } from './utils.js';
+import { allowedURL, downloadName, summarizeJobs, publicError } from './utils.js';
 const KIND = 'videos';
 const PREFIX = 'workspace:';
 let operations = Promise.resolve();
@@ -15,7 +16,7 @@ const save = state => {
   }
   return chrome.storage.session.set({[PREFIX + state.id]:state});
 };
-const load = async id => (await chrome.storage.session.get(PREFIX + id))[PREFIX + id];
+const load = async id => { const state=(await chrome.storage.session.get(PREFIX + id))[PREFIX + id]; return state ? migrateDiscovery(state) : state; };
 const all = async () => Object.entries(await chrome.storage.session.get(null)).filter(([k]) => k.startsWith(PREFIX)).map(([,v])=>v);
 const active = state => summarizeJobs(state.jobs).active > 0;
 async function liveTab(id) { try { return await chrome.tabs.get(id); } catch { return null; } }
@@ -25,14 +26,14 @@ export async function openWorkspace(tab) {
     const existing = await all();
     for (const state of existing) {
       const manager=await liveTab(state.workspaceTabId);
-      if (manager?.url !== chrome.runtime.getURL(`workspace.html?id=${state.id}`)) { state.closed=true;state.items=[];state.history=[];if(active(state)) await pump(state); if(!active(state)) await chrome.storage.session.remove(PREFIX + state.id); continue; }
+      if (manager?.url !== chrome.runtime.getURL(`workspace.html?id=${state.id}`)) { state.closed=true;state.items=[];state.previousItems=[];state.history=[];if(active(state)) await pump(state); if(!active(state)) await chrome.storage.session.remove(PREFIX + state.id); continue; }
       if (state.tabId === tab.id && state.url === tab.url) {
         await chrome.tabs.update(state.workspaceTabId, {active:true}); return state.id;
       }
     }
     if ((await all()).length >= 4) throw new Error('作業タブは4つまでです。使い終わった作業タブを閉じてください。');
     const id = crypto.randomUUID();
-    const state = {id, tabId:tab.id, url:tab.url || '', title:(tab.title || 'ページ').slice(0,160), items:[], jobs:[], notices:[], scanned:false};
+    const state = {id, tabId:tab.id, url:tab.url || '', title:(tab.title || 'ページ').slice(0,160), items:[], previousItems:[], scan:{version:DISCOVERY_VERSION,sequence:0,at:null,currentCount:0,previousCount:0,omitted:0}, jobs:[], notices:[], scanned:false};
     // Open inactive first so messages cannot arrive before the session is persisted.
     const manager = await chrome.tabs.create({url:chrome.runtime.getURL(`workspace.html?id=${id}`), active:false});
     state.workspaceTabId = manager.id;
@@ -55,34 +56,40 @@ async function scan(state) {
   if (!/^https?:\/\//.test(tab.url)) throw new Error('通常のHTTP/HTTPSページで拡張アイコンを押してください。Chromeの設定・ストア等は取得できません。');
   // Chrome injects only into frames for which activeTab or a site grant permits access.
   let results;
-  try { results = await chrome.scripting.executeScript({target:{tabId:state.tabId,allFrames:true},func:collect}); }
-  catch { results = await chrome.scripting.executeScript({target:{tabId:state.tabId},func:collect}); }
+  try { results = await chrome.scripting.executeScript({target:{tabId:state.tabId,allFrames:true},func:collect,args:[state.items.map(item=>item.url)]}); }
+  catch { results = await chrome.scripting.executeScript({target:{tabId:state.tabId},func:collect,args:[state.items.map(item=>item.url)]}); }
   const collected = results.filter(r=>r.result?.items);
   if (!collected.length) throw new Error('ページの動画を取得できませんでした。元ページからやり直してください。');
-  const incoming = collected.flatMap(({result,frameId=0})=>result.items.map(item => {
-    const kind=mediaKind(item.url,item.mime);
-    return {...item, frameId, type:kind==='unknown' && (item.source==='video' || item.mediaHint) && /^https?:/.test(item.url) ? 'direct' : kind};
-  }));
-  state.items = mergeItems(state.items,incoming).slice(0,500).map(item=>{
-    const kind=mediaKind(item.url,item.mime);
-    return {...item,type:kind==='unknown' && (item.source==='video' || item.mediaHint) && /^https?:/.test(item.url) ? 'direct' : kind};
-  });
-  state.notices = [...new Set(collected.flatMap(r=>r.result.notices || []))];
-  state.frames = [...new Map(collected.flatMap(r=>r.result.frames || []).map(f=>[f.url,f])).values()].slice(0,100);
-  state.frames = (await Promise.all(state.frames.map(async frame=> {
+  const snapshot = discoverySnapshot(state,collected);
+  // Resolve all grants before replacing the snapshot. No partial result survives
+  // a permission failure, navigation, or detached source tab.
+  snapshot.frames = (await Promise.all(snapshot.frames.map(async frame=> {
     const url=new URL(frame.url);
     const pattern=`${url.protocol}//${url.hostname}/*`;
     return url.origin===new URL(state.url).origin || await chrome.permissions.contains({origins:[pattern]}) ? null : frame;
   }))).filter(Boolean);
-  if (state.items.length === 500) state.notices = [...new Set([...state.notices,'候補は500件まで表示します。'])];
-  state.scanned = true;
+  const after = await liveTab(state.tabId);
+  if (!after || after.url !== state.url) throw new Error('元ページが閉じられたか移動しました。そのページで拡張アイコンを押し直してください。');
+  const top = collected.find(entry=>entry.frameId===0);
+  if (!top?.result?.frameToken || !top.result.documentURL) throw new Error('元ページの取得情報を確認できません。再スキャンしてください。');
+  let current;
+  try { [current]=await chrome.scripting.executeScript({target:{tabId:state.tabId,frameIds:[0]},func:inspectSourceDocument}); }
+  catch { throw new Error('元ページが更新されました。再スキャンしてください。'); }
+  if (!current?.result || current.result.frameToken !== top.result.frameToken || current.result.documentURL !== top.result.documentURL
+    || (top.documentId && current.documentId !== top.documentId)) throw new Error('元ページが更新されました。再スキャンしてください。');
+  Object.assign(state,snapshot);
   await save(state); return state;
 }
 async function refreshJob(job) {
-  if (!job.downloadId || job.status !== 'in_progress') return;
+  if (!job.downloadId || !['in_progress','complete'].includes(job.status)) return;
   const [item] = await chrome.downloads.search({id:job.downloadId});
-  if (!item) { job.status='interrupted'; job.error='ダウンロード履歴から見つかりません。再試行できます。'; return; }
+  if (!item) {
+    if (job.status === 'complete') {job.exists=false;job.resultUnavailable=true;return;}
+    job.status='interrupted'; job.error='ダウンロード履歴から見つかりません。再試行できます。'; return;
+  }
   job.bytesReceived = item.bytesReceived; job.totalBytes = item.totalBytes;
+  if (typeof item.filename === 'string') job.actualFilename = item.filename;
+  if (typeof item.exists === 'boolean') job.exists = item.exists;
   job.status = item.state;
   if (item.error) job.error = item.error;
   if (item.state === 'complete' && /^(text\/html|application\/(json|xml))/i.test(item.mime || '')) {
@@ -91,6 +98,24 @@ async function refreshJob(job) {
   if(item.state==='complete' && job.outputFormat==='mp4' && /^video\//i.test(item.mime || '') && !/^video\/(?:mp4|x-m4v)(?:;|$)/i.test(item.mime)) {
     job.status='interrupted';job.error='選択したMP4と異なる形式の応答が保存されました。保存先のファイルと配信元を確認してください。';
   }
+}
+async function ownedDownload(state, id) {
+  if (!Number.isSafeInteger(id) || id < 0) throw new Error('保存結果の指定が不正です。');
+  const known=[...(state.jobs || []),...(state.history || [])].some(job=>job.downloadId===id);
+  const [item]=await chrome.downloads.search({id});
+  if (!item || (!known && item.byExtensionId !== chrome.runtime.id)) throw new Error('この拡張の保存結果を確認できません。Chromeのダウンロード履歴を確認してください。');
+  return item;
+}
+async function locate(state, ref) {
+  const tab=await liveTab(state.tabId);
+  if (!tab || tab.url!==state.url || !ref?.frameToken || !ref.elementToken || !ref.documentURL) throw new Error('元ページの出典が変わりました。再スキャンしてください。');
+  const target={tabId:state.tabId,...(ref.documentId ? {documentIds:[ref.documentId]} : {frameIds:[ref.frameId || 0]})};
+  let results;
+  try {results=await chrome.scripting.executeScript({target,func:locateSourceElement,args:[ref.frameToken,ref.elementToken,ref.documentURL]});}
+  catch {throw new Error('元ページの出典が変わりました。再スキャンしてください。');}
+  if (!results.some(result=>result.result?.found)) throw new Error('元ページにこの出典が見つかりません。再スキャンしてください。');
+  await chrome.tabs.update(state.tabId,{active:true});
+  return {found:true};
 }
 async function pump(state) {
   for (const job of state.jobs) await refreshJob(job);
@@ -139,9 +164,28 @@ chrome.runtime.onMessage.addListener((message,sender,respond) => {
         const tab=await liveTab(state.tabId);
         if(!item || !tab || tab.url!==state.url) throw new Error('元ページの動画情報が変わりました。元ページから開き直してください。');
         if(!Number.isSafeInteger(message.offset) || message.offset < -2 || !/^[a-f0-9-]{36}$/.test(message.token)) throw new Error('動画データの指定が不正です。');
-        const [result]=await chrome.scripting.executeScript({target:{tabId:state.tabId,frameIds:[item.frameId || 0]},func:readPageBlob,args:[item.url,message.offset,message.token]});
+        const target={tabId:state.tabId,...(item.documentId ? {documentIds:[item.documentId]} : {frameIds:[item.frameId || 0]})};
+        const [result]=await chrome.scripting.executeScript({target,func:readPageBlob,args:[item.url,message.offset,message.token]});
         if(!result?.result || result.result.error) throw new Error(result?.result?.error || 'ページ内動画を取得できませんでした。');
         return result.result;
+      }
+      case 'inspect-download': {
+        const item=await ownedDownload(state,message.downloadId);
+        return {downloadId:item.id,filename:item.filename || '',exists:item.exists,state:item.state};
+      }
+      case 'show-download': {
+        const item=await ownedDownload(state,message.downloadId);
+        if (item.state !== 'complete' || item.exists === false) throw new Error('保存ファイルが見つかりません。Chromeのダウンロード履歴を確認してください。');
+        await chrome.downloads.show(item.id); return {};
+      }
+      case 'locate-source': {
+        const item=state.items.find(item=>item.url===message.url);
+        const occurrence=item?.occurrences?.find(entry=>message.occurrenceId ? entry.id===message.occurrenceId : entry.elementToken);
+        return locate(state,occurrence);
+      }
+      case 'locate-frame': {
+        const frame=state.frames?.find(frame=>frame.locatable===true && frame.elementToken===message.elementToken && frame.frameToken===message.frameToken);
+        return locate(state,frame && {...frame,frameId:frame.parentFrameId,documentId:frame.parentDocumentId});
       }
       case 'source': { const tab = await liveTab(state.tabId); if(!tab) throw new Error('元ページは閉じられています。'); await chrome.tabs.update(state.tabId,{active:true}); return {}; }
       case 'save': {
@@ -164,7 +208,7 @@ chrome.runtime.onMessage.addListener((message,sender,respond) => {
       }
       case 'retry': {
         if(active(state)) throw new Error('保存処理中です。');
-        for(const job of state.jobs.filter(j=>j.status==='interrupted')) { job.status='queued'; delete job.downloadId; delete job.error; }
+        for(const job of state.jobs.filter(j=>j.status==='interrupted')) { job.status='queued'; delete job.downloadId; delete job.error; delete job.actualFilename; delete job.exists; delete job.resultUnavailable; }
         return pump(state);
       }
       case 'capture': return claim(state,message.instance,message.mode);
@@ -194,7 +238,7 @@ chrome.tabs.onRemoved.addListener(tabId => {
     const lock = (await chrome.storage.session.get('captureLock')).captureLock;
     if(lock?.tabId === tabId) await chrome.storage.session.remove('captureLock');
     for(const state of await all()) if(state.workspaceTabId === tabId) {
-      if(active(state)) { state.closed=true;state.items=[];state.notices=[];state.history=[];await save(state); }
+      if(active(state)) { state.closed=true;state.items=[];state.previousItems=[];state.notices=[];state.history=[];await save(state); }
       else await chrome.storage.session.remove(PREFIX + state.id);
     }
   }).catch(()=>{});

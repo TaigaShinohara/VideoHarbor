@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {collect} from '../extension/collector.js';
+import {collect,locateSourceElement} from '../extension/collector.js';
 
 function node(tag,attrs = {},props = {},children = []) {
   const descendants = () => children.flatMap(child => [child,...child.querySelectorAll('*')]);
@@ -75,7 +75,7 @@ test('collector discovers typed links, object/embed, player data and loaded vide
   assert.ok(!result.items.some(item => /session|watch|image.jpg/.test(item.url)));
 });
 
-test('collector reports embedded page URLs separately and walks same-origin/open shadow content',t => {
+test('collector leaves each iframe document to its own injection and walks open shadow content',t => {
   const child = documentFor([node('video',{src:'https://frame.test/frame.mp4'})]);
   const inaccessible = node('iframe',{src:'https://other.test/player?video=123'},{get contentDocument() { return null; }});
   const shadow = node('div',{}, {shadowRoot:node('shadow',{}, {},[node('video',{src:'/shadow.webm'})])});
@@ -84,7 +84,8 @@ test('collector reports embedded page URLs separately and walks same-origin/open
     node('iframe',{src:'javascript:alert(1)'}),
   ]));
   assert.deepEqual(result.frames.map(item => item.url),['https://page.test/frame','https://other.test/player?video=123']);
-  assert.ok(bySuffix(result,'frame.mp4'));
+  assert.equal(bySuffix(result,'frame.mp4'),undefined,'parent output must not inherit child media');
+  assert.ok(bySuffix(scan(t,child),'frame.mp4'),'the child injection discovers its own media');
   assert.ok(bySuffix(result,'shadow.webm'));
   assert.ok(!result.items.some(item => item.url.includes('player?')));
 });
@@ -204,11 +205,13 @@ test('collector keeps VideoObject embed pages as frames and discovers media ifra
     node('iframe',{src:'about:blank'},{contentDocument:aboutDocument}),
     node('iframe',{srcdoc:'<video src="/srcdoc.mp4"></video>'},{contentDocument:srcdocDocument}),
   ]));
-  assert.equal(result.items.length,5);
+  assert.equal(result.items.length,3);
   assert.deepEqual(result.frames.map(frame => frame.url),['https://player.test/embed']);
   assert.equal(result.items.find(item => item.url.startsWith('https://media.test/embedded.mp4')).url,'https://media.test/embedded.mp4?one=1&two=2');
-  assert.ok(bySuffix(result,'about-blank.mp4'));
-  assert.ok(bySuffix(result,'srcdoc.mp4'));
+  assert.equal(bySuffix(result,'about-blank.mp4'),undefined);
+  assert.equal(bySuffix(result,'srcdoc.mp4'),undefined);
+  assert.ok(bySuffix(scan(t,aboutDocument),'about-blank.mp4'));
+  assert.ok(bySuffix(scan(t,srcdocDocument),'srcdoc.mp4'));
 });
 
 test('collector bounds inline player parsing and does not spend JSON budget on unrelated JavaScript',t => {
@@ -223,4 +226,108 @@ test('collector bounds inline player parsing and does not spend JSON budget on u
   ]));
   assert.equal(oversized.items.length,0);
   assert.ok(oversized.notices.some(notice => notice.includes('動画設定')));
+});
+
+
+test('collector distinguishes occurrences of a shared resource and preserves independent query variants',t => {
+  const result=scan(t,documentFor([
+    node('video',{src:'/clip.mp4?token=one',title:'First'},{duration:12,paused:false,ended:false}),
+    node('video',{src:'/clip.mp4?token=one',title:'Second'},{duration:25,paused:true}),
+    node('video',{src:'/clip.mp4?token=two',title:'Variant'}),
+  ],[{name:'https://page.test/clip.mp4?token=one',initiatorType:'video'}]));
+  assert.equal(result.items.length,2);
+  const first=result.items.find(item=>item.url.endsWith('token=one'));
+  const videos=first.occurrences.filter(entry=>entry.source==='video');
+  assert.equal(videos.length,2);
+  assert.notEqual(videos[0].videoRef,videos[1].videoRef);
+  assert.deepEqual(videos.map(entry=>entry.duration),[12,25]);
+  assert.deepEqual(videos.map(entry=>entry.playing),[true,false]);
+  assert.equal(first.occurrences.at(-1).origin,'performance');
+  assert.equal(first.occurrences.at(-1).videoRef,undefined);
+  assert.equal(first.discovery,'current-dom');
+});
+
+test('collector distinguishes two same-host embeds and keeps titles and observed positions',t => {
+  const rect={x:10,y:20,width:640,height:360,top:20,left:10,bottom:380,right:650};
+  const result=scan(t,documentFor([
+    node('iframe',{src:'https://player.test/embed',title:'Chapter one'},{getBoundingClientRect:()=>rect}),
+    node('iframe',{src:'https://player.test/embed',title:'Chapter two'},{getBoundingClientRect:()=>({...rect,y:500,top:500,bottom:860})}),
+  ]));
+  assert.equal(result.frames.length,2);
+  assert.deepEqual(result.frames.map(frame=>frame.title),['Chapter one','Chapter two']);
+  assert.notEqual(result.frames[0].elementToken,result.frames[1].elementToken);
+  assert.equal(result.frames[1].position.y,500);
+});
+
+test('collector prioritizes current playing video beyond 500 old links and bounds inline previews',t => {
+  let canvases=0;
+  const rect={x:0,y:0,width:160,height:90,top:0,left:0,bottom:90,right:160};
+  const links=Array.from({length:500},(_,i)=>node('a',{href:`/old${i}.mp4`}));
+  const videos=Array.from({length:10},(_,i)=>node('video',{src:`/new${i}.mp4`},{videoWidth:640,videoHeight:360,readyState:2,paused:false,getBoundingClientRect:()=>rect}));
+  const doc=documentFor([...links,...videos]);
+  doc.createElement=()=>{canvases++;return {getContext:()=>({drawImage(){}}),toDataURL:()=> 'data:image/jpeg;base64,AA=='};};
+  const result=scan(t,doc);
+  assert.equal(result.items.length,500);
+  assert.ok(bySuffix(result,'new9.mp4'));
+  assert.equal(canvases,8);
+  assert.equal(result.items.flatMap(item=>item.occurrences).filter(entry=>entry.previewDataURL).length,8);
+  assert.ok(result.notices.some(notice=>notice.includes('500')));
+});
+
+test('collector treats tainted preview as optional and keeps video collection usable',t => {
+  const rect={x:0,y:0,width:160,height:90,top:0,left:0,bottom:90,right:160};
+  const doc=documentFor([node('video',{src:'/clip.mp4'},{videoWidth:640,videoHeight:360,readyState:2,getBoundingClientRect:()=>rect})]);
+  doc.createElement=()=>({getContext:()=>({drawImage(){}}),toDataURL(){throw new Error('tainted');}});
+  const result=scan(t,doc);
+  assert.equal(result.items.length,1);
+  assert.equal(result.items[0].occurrences[0].previewDataURL,undefined);
+});
+
+
+test('collector groups only sources of a confirmed config object and keeps unrelated hydrated videos independent',t => {
+  const result=scan(t,documentFor([node('script',{type:'application/json'},{textContent:JSON.stringify({
+    first:{name:'Known first',duration:42,sources:[{src:'/one.mp4'},{src:'/one.webm'}]},
+    second:{sources:[{src:'/two.mp4'}]},
+  })})]));
+  const first=bySuffix(result,'one.mp4').occurrences[0];
+  assert.equal(first.configRef,bySuffix(result,'one.webm').occurrences[0].configRef);
+  assert.notEqual(first.configRef,bySuffix(result,'two.mp4').occurrences[0].configRef);
+  assert.equal(first.title,'Known first');
+  assert.equal(first.duration,42);
+});
+
+
+test('source location requires current document tokens and does not find removed elements after rescan',t=>{
+  let scrolled=0;
+  const children=[node('video',{src:'/clip.mp4'},{isConnected:true,scrollIntoView(){scrolled++;}})];
+  const doc=documentFor(children);
+  const result=scan(t,doc), ref=result.items[0].occurrences[0];
+  assert.deepEqual(locateSourceElement('foreign',ref.elementToken,result.documentURL),{found:false});
+  assert.deepEqual(locateSourceElement(ref.frameToken,ref.elementToken,'https://changed.test/'),{found:false});
+  assert.deepEqual(locateSourceElement(ref.frameToken,ref.elementToken,result.documentURL),{found:true});
+  assert.equal(scrolled,1);
+  children.length=0;
+  scan(t,doc);
+  assert.deepEqual(locateSourceElement(ref.frameToken,ref.elementToken,result.documentURL),{found:false});
+  assert.equal(scrolled,1);
+});
+
+
+test('metadata embed hints never claim a script is a locatable visual player',t=>{
+  const rect={x:10,y:20,width:640,height:360,top:20,left:10,bottom:380,right:650};
+  const result=scan(t,documentFor([
+    node('script',{type:'application/ld+json',title:'Metadata title'},{getBoundingClientRect:()=>rect,textContent:JSON.stringify({'@type':'VideoObject',name:'Video name',embedUrl:'https://player.test/embed'})}),
+    node('iframe',{src:'https://player.test/embed',title:'Actual visible player'},{getBoundingClientRect:()=>rect}),
+  ]));
+  assert.equal(result.frames.length,2);
+  const metadata=result.frames.find(frame=>frame.hintSource==='metadata');
+  assert.equal(metadata.locatable,false);
+  assert.equal(metadata.elementToken,undefined);
+  assert.equal(metadata.position,undefined);
+  assert.equal(metadata.title,undefined);
+  const element=result.frames.find(frame=>frame.hintSource==='element');
+  assert.equal(element.locatable,true);
+  assert.ok(element.elementToken);
+  assert.equal(element.title,'Actual visible player');
+  assert.equal(element.position.y,20);
 });
