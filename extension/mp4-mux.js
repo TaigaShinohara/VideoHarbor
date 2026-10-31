@@ -212,8 +212,20 @@ function fragment(bytes,moof,mdats,track,budget) {
       duration+=BigInt(sampleDuration);length+=sampleSize;
     }
     const end=offset+length;
-    if(!Number.isSafeInteger(end) || !mdats.some(mdat=>offset>=mdat.data && end<=mdat.end) || ranges.some(range=>offset<range.end&&end>range.start))fail('サンプル位置がmdatの範囲外か重複しています。');
+    if(!Number.isSafeInteger(offset) || !Number.isSafeInteger(end))fail('サンプル位置がmdatの範囲外か重複しています。');
     ranges.push({start:offset,end});nextOffset=end;
+  }
+  // Explicit offsets may visit payloads in a different physical order. Sort
+  // only this validation index, never the runs or their sample timestamps.
+  // Each range and mdat is then visited once instead of rescanning every
+  // preceding range and every mdat for every run.
+  ranges.sort((a,b)=>a.start-b.start);
+  let mdatIndex=0,previousEnd=-1;
+  for(const range of ranges) {
+    while(mdatIndex<mdats.length && mdats[mdatIndex].end<=range.start)mdatIndex++;
+    const mdat=mdats[mdatIndex];
+    if(range.start<previousEnd || !mdat || range.start<mdat.data || range.end>mdat.end)fail('サンプル位置がmdatの範囲外か重複しています。');
+    previousEnd=range.end;
   }
   for(const sdtp of traf.filter(box=>box.type==='sdtp')){full(bytes,sdtp);exact(sdtp,4+totalSamples);}
   track.end=time+duration;
