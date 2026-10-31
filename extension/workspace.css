@@ -105,10 +105,11 @@ button.small { min-height: 36px; padding: 7px 11px; font-size: .82rem; }
 #unsupported { margin-top: 18px; }
 #unsupported .video-card { background: #f8faf8; }
 #unsupported .count { min-height: auto; border: 0; padding: 0; background: transparent; }
-.record-fallback { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 2px 10px; margin-top: 22px; color: var(--muted); font-size: .8rem; }
-.record-fallback .text-button { font-size: .8rem; }
+.record-fallback { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; margin-top: 22px; border: 1px solid var(--accent-line); border-radius: 13px; padding: 20px; background: var(--accent-soft); }
+.record-fallback > .icon { width: 28px; height: 28px; color: var(--accent); }
+.record-fallback > strong { flex: 1; font-size: 1rem; }
+.record-fallback .primary { min-height: 46px; padding: 12px 20px; font-size: .95rem; }
 .footer { position: sticky; z-index: 5; bottom: 0; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 18px; margin-top: 22px; border-top: 1px solid var(--line); padding: 15px 0 max(15px, env(safe-area-inset-bottom)); background: #f5f7f6; }
-#batch { color: var(--muted); font-size: .8rem; font-variant-numeric: tabular-nums; }
 .record-layout { display: grid; grid-template-columns: minmax(290px, 340px) minmax(0, 1fr); align-items: start; gap: 24px; }
 .record-layout:has(.record-settings[hidden]) { grid-template-columns: minmax(0, 1fr); }
 .record-layout:has(.record-settings[hidden]) .record-stage { width: 100%; max-width: 760px; margin: 0 auto; }
@@ -287,6 +288,9 @@ body.media-saving { padding-bottom: 200px; }
   .section-heading { align-items: flex-start; gap: 12px; margin-bottom: 16px; }
   .section-heading p { font-size: .78rem; }
   .section-heading .count { max-width: 110px; text-align: center; white-space: normal; }
+  .record-fallback { gap: 12px; padding: 16px; }
+  .record-fallback > strong { flex-basis: calc(100% - 40px); font-size: .95rem; }
+  .record-fallback .primary { width: 100%; }
   .video-card { display: grid; grid-template-columns: 43px minmax(0, 1fr); align-items: start; gap: 13px; padding: 15px; }
   .file-icon { width: 43px; min-height: 57px; border-radius: 9px; }
   .file-icon .icon { width: 24px; height: 24px; }

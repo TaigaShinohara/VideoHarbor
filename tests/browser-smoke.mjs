@@ -104,7 +104,7 @@ try {
     await worker.evaluate(()=>{globalThis.__shownDownloads=[];chrome.downloads.show=id=>globalThis.__shownDownloads.push(id);});
     await blueGroup.locator('.source-alternatives > summary').click();
     assert.equal(await blueGroup.locator('.source-alternatives .direct-save').isVisible(),true);
-    await blueGroup.locator('.source-alternatives .direct-save').click();await manager.waitForFunction(()=>document.querySelector('#batch').textContent.includes('1件保存完了'));
+    await blueGroup.locator('.source-alternatives .direct-save').click();await manager.waitForFunction(()=>document.querySelector('.source-alternatives .item-status[data-state="complete"]'));
     await blueGroup.locator('.source-alternatives .show-file').click();
     assert.equal(await worker.evaluate(()=>globalThis.__shownDownloads.length),1,'confirmed output has a folder action using its own download ID');
     await blueGroup.locator('.source-alternatives > summary').click();
@@ -376,7 +376,7 @@ try {
   await session.send('ServiceWorker.enable');await session.send('ServiceWorker.stopAllWorkers');
   await manager.reload();
   await manager.waitForFunction(()=>document.querySelector('#message').textContent.includes('前回の取得結果'));
-  await manager.waitForFunction(()=>document.querySelector('#batch').textContent.includes('1件保存完了'));
+  await manager.waitForFunction(()=>document.querySelector('.item-status[data-state="complete"]'));
   const restartedWorker=context.serviceWorkers().find(w=>w.url().includes(id));
   assert.ok(restartedWorker,'worker is available after page reconnects');
   assert.notEqual(await restartedWorker.evaluate(()=>globalThis.__workerBoot),bootBefore,'service worker actually restarted');
