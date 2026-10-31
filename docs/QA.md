@@ -1,5 +1,17 @@
 # QA — v0.1
 
+## 保存形式の選択 — 2026-10-31 / v0.4.0
+
+- `npm test`: 152件PASS、失敗・SKIPなし。`npm run check`・`git diff --check`もPASS。必要なruntime依存・必須権限は追加していない。
+- `npm run test:browser`: 既存の隔離Chrome直接保存・録画・キーボード・狭幅・worker再起動等の回帰試験PASS。
+- 出力ポリシー10件：MP4/M4V、HLS/DASH、既知非MP4、未知blob/直接URL、MIMEとURLの矛盾、無効値を確認。元形式ラベル・ファイル名は既知MIMEに合わせ、互換な別名の元suffixを保持する。既知WebM等のMP4単純リネームを許可しない。
+- TS→MP4専用9件：単一番組のAVC 8bit 4:2:0 progressive・1画像/PESとAAC-LC ADTS、映像のみの入力、PAT/PMT CRC、暗号化・欠落・codec/設定変更・時刻異常・上限の拒否。実HLSの複数TSをMP4へ変換し、B-frameと44.1kHz AACを含む全packetのPTS/DTSが元TSの基準時刻を除いた値と40µs以内で一致、24映像frame、両track全編デコード終了0を確認。125001サンプルの合成TSでもJS引数数上限に当たらず変換できた。
+- 保存controllerでは形式の同期検証、実blob MIMEが非MP4ならchunk取得/保存前に拒否、保存開始後の指定固定、同形式のretrybuffer再利用、形式変更時の古いbuffer解放と再取得を確認。背景では直接保存の指定/filename固定とretry保持、非対応指定を含むbatchの原子的拒否、Chrome実応答がWebM/QuickTimeならMP4完了にしないことを確認。既に保存された異形式の応答ファイルがある場合は、その事実を表示して自動削除しない。
+- `npm run test:embedded`: 隔離Chrome・localhost合成fixtureでPASS。HLS/既知MP4の初期MP4、未知blob/既知WebMの初期元形式、WebMのMP4無効と理由、HLSの元TS保存と同じソースから選択MP4の実保存、直接MP4の実filenameを確認。各成果物の拡張子と実コンテナを照合し、両trackのpacket長3.8〜4.5秒・開始差100ms未満と全編デコードを確認。保存中の全selector無効化とscripted changeでも開始時の形式保持、実WebM blobのMP4拒否、既存DASH/別音声HLS/blobの保存もPASS。
+- 最初のfilename試験では、CDPで保存先を強制するとBlob保存の実filenameがUUIDとなり拡張子判定に失敗した。製品の指定filenameを変えず、テスト専用の新規profile内だけで既定保存先を一時ディレクトリへ設定し、Chrome標準の命名動作で再検証した。個人profileは読み書きせず、実保存がテストの一時ディレクトリ内に収まることも確認した。
+
+録画形式は既存のWebMを維持。WebM/MOV/Ogg等のMP4への再エンコード、HEVC等のTS変換は未対応。MP4指定で非対応なら理由を表示して中断し、元形式へ勝手に切り替えない。実サイトごとの互換性、本人の理解・操作、実OS picker・音声・長時間/最大容量の測定は未確認。
+
 ## DASH・別音声MP4の保存拡張 — 2026-10-31 / v0.3.0
 
 - `npm test`: 120件PASS、失敗・SKIPなし。このMacではffmpeg/ffprobeが利用可能なため、実MP4合成試験も実行した。`npm run check`と`git diff --check`もPASS。

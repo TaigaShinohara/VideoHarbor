@@ -82,6 +82,10 @@ button.small { min-height: 36px; padding: 7px 11px; font-size: .82rem; }
 .url-detail summary { width: fit-content; cursor: pointer; }
 .url-detail[open] summary { margin-bottom: 5px; }
 .url-detail p { color: var(--muted); }
+.format-choice { display: flex; align-items: center; flex-wrap: wrap; gap: 7px 12px; margin-top: 10px; font-size: .8rem; }
+.format-choice label { color: var(--muted); }
+.output-format { min-width: 0; max-width: 100%; width: 220px; min-height: 38px; border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; background: var(--paper); color: var(--ink); font: inherit; }
+.format-hint { margin-top: 5px; }
 .empty { display: grid; justify-items: center; gap: 12px; border: 1px solid var(--line); border-radius: 15px; padding: 42px 24px; background: var(--paper); text-align: center; }
 .empty-icon { display: grid; place-items: center; width: 58px; height: 58px; margin-bottom: 5px; border-radius: 17px; background: #eff5f1; color: #72998b; }
 .empty-icon .icon { width: 30px; height: 30px; }
