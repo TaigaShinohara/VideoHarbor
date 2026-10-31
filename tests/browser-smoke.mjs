@@ -14,11 +14,11 @@ const workerPath=join(extension,'background.js');await writeFile(workerPath,(awa
 const manifest=JSON.parse(await readFile(join(extension,'manifest.json'),'utf8'));
 manifest.host_permissions=['http://127.0.0.1/*'];await writeFile(join(extension,'manifest.json'),JSON.stringify(manifest));
 let clip=Buffer.alloc(0), failedOnce=true;
-const fixture=`<!doctype html><html lang="ja"><title>Synthetic media fixture</title><body><h1>Local fixture</h1><img src="/red.svg" alt="赤" width="320" height="200"><img src="/blue.svg" alt="青" width="400" height="300"><img src="/red.svg"><div style="background-image:url('/green.svg');width:100px;height:100px"></div><picture><source srcset="/red.svg 1x, /blue.svg 2x"><img src="/red.svg"></picture><div id="shadow"></div><iframe src="/frame"></iframe><video controls src="/clip.webm" width="320" height="180"></video><a href="/clip.webm?alternate=1">same-name video</a><a href="/stream.m3u8">stream</a><script>document.querySelector('#shadow').attachShadow({mode:'open'}).innerHTML='<img src="/shadow.svg">';</script></body></html>`;
+const fixture=`<!doctype html><html lang="ja"><meta charset="utf-8"><title>Synthetic media fixture</title><body><h1>Local fixture</h1><img src="/red.svg" alt="赤" width="320" height="200"><img src="/blue.svg" alt="青" width="400" height="300"><img src="/red.svg"><div style="background-image:url('/green.svg');width:100px;height:100px"></div><picture><source srcset="/red.svg 1x, /blue.svg 2x"><img src="/red.svg"></picture><div id="shadow"></div><iframe src="/frame" title="関連画像"></iframe><video id="blue" title="青いカップ" controls src="/clip.webm" width="320" height="180"><source src="/variant.webm" type="video/webm"></video><video id="red" title="赤いカップ" controls src="/clip.webm?alternate=1" width="320" height="180"></video><a href="/stream.m3u8">stream</a><script>document.querySelector('#shadow').attachShadow({mode:'open'}).innerHTML='<img src="/shadow.svg">';</script></body></html>`;
 const server=createServer((req,res)=>{
   if(req.url==='/empty') {res.setHeader('Content-Type','text/html');return res.end('<!doctype html><html lang="ja"><title>Empty synthetic fixture</title><body><h1>No media</h1></body></html>');}
   if(req.url==='/frame') {res.setHeader('Content-Type','text/html');return res.end('<img src="/frame.svg">');}
-  if(req.url.startsWith('/clip.webm')) {res.setHeader('Content-Type','video/webm');return res.end(clip);}
+  if(req.url.startsWith('/clip.webm') || req.url==='/variant.webm') {res.setHeader('Content-Type','video/webm');return res.end(clip);}
   if(req.url.startsWith('/stream.m3u8')) {res.setHeader('Content-Type','application/vnd.apple.mpegurl');return res.end('#EXTM3U\n');}
   if(req.url.startsWith('/fail.svg') && failedOnce) {res.statusCode=403;return res.end('blocked');}
   if(req.url.endsWith('.svg')) {res.setHeader('Content-Type','image/svg+xml');return res.end(`<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300"><rect width="400" height="300" fill="${req.url.includes('blue')?'#566ac4':req.url.includes('green')?'#58a884':'#e8987e'}"/></svg>`);}
@@ -93,7 +93,26 @@ try {
       assert.equal(await card.locator('details').getAttribute('open'),null);
     }
     await screenshots('download');
-    await manager.locator('.direct-save').first().click();await manager.waitForFunction(()=>document.querySelector('#batch').textContent.includes('1件保存完了'));
+    const blueGroup=manager.locator('.video-group').filter({has:manager.getByRole('heading',{name:'青いカップ',exact:true})});
+    assert.equal(await blueGroup.count(),1,'a real video occurrence has one identifiable card');
+    assert.equal(await blueGroup.locator('.video-card').count(),2,'only confirmed sources of one video are grouped');
+    assert.equal(await manager.getByRole('heading',{name:'赤いカップ',exact:true}).count(),1,'same-name CDN files remain different page videos');
+    await page.locator('#blue').evaluate(el=>{el.style.outline='2px dotted rgb(77, 88, 99)';});
+    await blueGroup.locator('.locate-source').click();
+    await page.waitForFunction(()=>document.querySelector('#blue').style.outline.includes('18, 103, 214'));
+    await manager.bringToFront();await blueGroup.locator('.locate-source').click();
+    await page.waitForFunction(()=>document.querySelector('#blue').style.outline==='rgb(77, 88, 99) dotted 2px' || document.querySelector('#blue').style.outline==='2px dotted rgb(77, 88, 99)');
+    await manager.bringToFront();
+    await blueGroup.locator('.source-alternatives > summary').click();
+    assert.equal(await blueGroup.locator('.source-alternatives .direct-save').isVisible(),true);
+    await blueGroup.locator('.source-alternatives .direct-save').click();await manager.waitForFunction(()=>document.querySelector('#batch').textContent.includes('1件保存完了'));
+    await blueGroup.locator('.source-alternatives > summary').click();
+    const hlsFormat=manager.locator('.video-card').filter({hasText:'stream.m3u8'}).locator('.output-format');
+    await hlsFormat.selectOption('auto');
+    await page.locator('#red').evaluate(el=>el.remove());
+    await manager.locator('#scan').click();await manager.waitForFunction(()=>!document.querySelector('#scan').disabled);
+    assert.equal(await manager.getByRole('heading',{name:'赤いカップ',exact:true}).count(),0,'a removed page video is no longer described as current');
+    assert.equal(await hlsFormat.inputValue(),'auto','rescan preserves the selected output format');
     // Arrow navigation keeps focus inside the tablist for consecutive key presses.
     await manager.locator('#download-tab').focus();
     for(const [key,focused] of [['ArrowRight','record-tab'],['ArrowRight','download-tab'],['ArrowLeft','record-tab'],['Home','download-tab'],['End','record-tab']]) {

@@ -28,6 +28,8 @@ export function collect(previousURLs = []) {
         info.position = {x:Math.round(rect.x),y:Math.round(rect.y),width:Math.round(rect.width),height:Math.round(rect.height)};
         const view = document.defaultView, style = view?.getComputedStyle?.(el);
         info.visibilityScope='frame-viewport';
+        info.locatable = rect.width > 0 && rect.height > 0 && !['SCRIPT','META','LINK','SOURCE'].includes(el.tagName)
+          && style?.display !== 'none' && style?.visibility !== 'hidden' && style?.visibility !== 'collapse' && style?.opacity !== '0';
         info.visible = rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.right > 0
           && (view?.innerHeight == null || rect.top < view.innerHeight) && (view?.innerWidth == null || rect.left < view.innerWidth)
           && style?.display !== 'none' && style?.visibility !== 'hidden' && style?.visibility !== 'collapse' && style?.opacity !== '0';
