@@ -247,6 +247,14 @@ function setupRecording() {
   });
   $('pause-record').addEventListener('click',()=>{try{recorder.snapshot().phase==='paused' ? recorder.resume() : recorder.pause();}catch(e){error(e);}});
   $('stop-record').addEventListener('click',()=>recorder.stop().catch(error));
+  $('continue-without-audio').addEventListener('click',()=>recorder.continueWithoutAudio());
+  for(const id of ['reselect-capture','cancel-record-start']) $(id).addEventListener('click',async()=>{
+    try {
+      await recorder.cancelStart();
+      if(!$('start-record').disabled) $('start-record').focus();
+      else $('record-state').focus();
+    } catch(e) { error(e); }
+  });
   $('save-record').addEventListener('click',()=>recorder.save().catch(error));
   $('discard-record').addEventListener('click',()=>{if(confirm('この作業タブ内の録画データを破棄しますか？保存済みのファイルは残ります。')) recorder.discard();});
   chrome.tabs.onRemoved.addListener(tabId=>{if(tabId===state.tabId && recorder.snapshot().method==='tab' && recorder.busy) recorder.stop().catch(error);});
@@ -254,12 +262,13 @@ function setupRecording() {
   updateRecording(recorder.snapshot());
 }
 function updateRecording(s) {
-  const phases={idle:'待機中',starting:'録画を準備中',recording:'録画中',paused:'一時停止中',finalizing:'保存を確定中',ready:'録画できました · 保存してください',saving:'ファイルを保存中',saved:'ファイル保存完了',error:'録画・保存に問題が起きました'};
-  const busy=['starting','recording','paused','finalizing','saving'].includes(s.phase);
+  const phases={idle:'待機中',starting:'録画を準備中','awaiting-audio-decision':'音声を確認してください · 録画未開始',recording:'録画中',paused:'一時停止中',finalizing:'保存を確定中',ready:'録画できました · 保存してください',saving:'ファイルを保存中',saved:'ファイル保存完了',error:'録画・保存に問題が起きました'};
+  const awaiting=s.phase==='awaiting-audio-decision';
+  const busy=['starting','awaiting-audio-decision','recording','paused','finalizing','saving'].includes(s.phase);
   const focused=document.activeElement, phaseChanged=previousRecordingPhase!==s.phase;
   const mode=document.querySelector('[name="record-mode"]:checked').value, disk=$('record-output').value==='file';
   const targetHint=mode==='tab' ? '元のタブを録画します。' : '開始後に共有する対象を選びます。別のタブも選べます。';
-  document.body.classList.toggle('recording-active',['starting','recording','paused','finalizing'].includes(s.phase));
+  document.body.classList.toggle('recording-active',['starting','awaiting-audio-decision','recording','paused','finalizing'].includes(s.phase));
   $('record-settings').hidden=busy || (s.resultReady && !s.resultSaved);
   document.body.classList.toggle('recording-error',s.phase==='error');
   $('record-panel').hidden=s.phase==='idle' && s.message===initialRecorderMessage;
@@ -277,25 +286,27 @@ function updateRecording(s) {
   $('chosen-file').textContent=s.diskChosen ? `選択済み: ${s.chosenFileName || s.fileName}` : '未選択';
   $('pause-record').hidden=!['recording','paused'].includes(s.phase);$('pause-record').textContent=s.phase==='paused' ? '再開' : '一時停止';
   $('stop-record').hidden=!['recording','paused'].includes(s.phase);
+  $('audio-decision').hidden=!awaiting;
   $('save-record').hidden=!s.resultReady || s.resultSaved || busy;
   $('discard-record').hidden=!s.resultReady || busy;
   const seconds=Math.floor((s.elapsed||0)/1000);$('record-time').textContent=`${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}`;$('record-size').textContent=formatBytes(s.bytes);
-  const showCaptureDetails=Boolean(s.method) && s.phase!=='starting';
+  const showCaptureDetails=Boolean(s.method) && !['starting','awaiting-audio-decision'].includes(s.phase);
   $('record-metrics').hidden=!showCaptureDetails;
   $('record-description').hidden=!showCaptureDetails;
   $('record-description').textContent=s.method ? `${s.method==='tab' ? '元のタブ' : 'Chromeで選んだ共有対象'} · ${s.target || state.title} · WebM · ${s.audio ? '音声あり' : '音声なし'}${busy ? ' · この作業タブを閉じないでください' : ''}` : '';
   if($('record-message').textContent!==s.message) $('record-message').textContent=s.message || '';
   $('record-message').hidden=!s.message || s.message===initialRecorderMessage;
   if(recorder && $('preview').srcObject!==recorder.stream) $('preview').srcObject=recorder.stream || null;
-  const live=['recording','paused'].includes(s.phase) && Boolean(recorder?.stream);
+  const live=['recording','paused','awaiting-audio-decision'].includes(s.phase) && Boolean(recorder?.stream);
   $('preview').hidden=!live;$('preview-placeholder').hidden=live;$('live-badge').hidden=!live;
-  $('live-label').textContent=s.phase==='paused' ? '一時停止中' : '録画中';
+  $('live-label').textContent=awaiting ? '共有中 · 録画未開始' : s.phase==='paused' ? '一時停止中' : '録画中';
   const stage={idle:['screen','録画の準備',targetHint],starting:['refresh','共有する対象を確認','Chromeの案内に従ってください。'],finalizing:['refresh','保存を確定中','この作業タブを閉じないでください。'],saving:['refresh','ファイルを保存中','保存先を確認してください。'],ready:['download','録画できました','ファイルへ保存して完了です。'],saved:['check','保存しました','直前の録画 · WebM'],error:['info','録画・保存を確認','下のメッセージを確認してください。']}[s.phase];
   if(stage) {
     $('stage-icon').querySelector('use').setAttribute('href',`icons.svg#${stage[0]}`);
     $('stage-title').textContent=stage[1];$('stage-hint').textContent=stage[2];
   }
   if(phaseChanged && focused && (focused.closest('[hidden]') || focused.disabled)) $('record-state').focus({preventScroll:true});
+  if(phaseChanged && awaiting) $('record-state').focus({preventScroll:true});
   // A cancelled/failed start returns to a usable setting without stealing timer focus.
   if(previousRecordingPhase==='starting' && !busy && document.activeElement===$('record-state') && !$('start-record').disabled) $('start-record').focus({preventScroll:true});
   previousRecordingPhase=s.phase;
