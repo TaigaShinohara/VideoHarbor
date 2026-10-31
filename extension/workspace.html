@@ -23,11 +23,12 @@
     <details id="unsupported" class="disclosure" hidden><summary>直接保存に未対応の候補 <span id="unsupported-count" class="count"></span></summary><p class="hint">未対応の配信構成は録画を試せます。保護された映像は録画できない場合があります。</p><div id="unsupported-list" class="video-list"></div></details>
     <div id="record-fallback" class="record-fallback"><span>保存したい動画がないときは</span><button id="try-record" class="text-button">録画を試す<svg class="icon" aria-hidden="true"><use href="icons.svg#arrow"></use></svg></button></div>
     <details id="previous-candidates" class="disclosure" hidden><summary>前回の候補</summary><p class="hint">今回の表示対象には含まれていません。ページの更新や取得上限で候補は変わります。元ページで目的の動画を表示して再スキャンできます。</p><ul id="previous-list" class="previous-list"></ul></details>
+    <details id="saved-files" class="disclosure" hidden><summary>この作業で保存したファイル</summary><ul id="saved-file-list" class="saved-file-list"></ul></details>
     <footer class="footer" id="download-footer" hidden><p id="batch" role="status" aria-live="polite"></p><div class="actions"><button id="cancel" class="secondary" hidden>保存を停止</button><button id="retry" class="secondary" hidden>中断分を再試行</button></div></footer>
   </section>
   <section id="record-view" class="view" role="tabpanel" aria-labelledby="record-tab" hidden>
     <div class="section-heading"><div><h2 tabindex="-1" id="record-heading">画面の続きを、残す</h2><p>選んだタブ・画面全体を、再生時間ぶん録画します。</p></div><span class="format-chip">WebM</span></div>
-    <div class="record-layout">
+    <div id="record-layout" class="record-layout">
       <div id="record-settings" class="record-settings">
         <fieldset id="record-options">
           <legend>録画する対象</legend>
@@ -43,7 +44,8 @@
         <div class="start-area"><p id="record-limit" class="limit-note">最大30分 · 約256 MiBで自動停止</p><p class="keep-open"><svg class="icon" aria-hidden="true"><use href="icons.svg#info"></use></svg>この作業タブを閉じないでください</p><button id="start-record" class="primary"><span class="record-dot" aria-hidden="true"></span>録画を開始</button></div>
         <details class="disclosure recording-help"><summary>録画について</summary><p>形式はWebMです。保護された映像は録画できない場合があります。共有ダイアログでは別のタブも選べます。</p><p>停止後に保存する方式は受信データ約256 MiBで自動停止します。最終データにより超える場合があります。順次保存も最大30分で停止します。</p></details>
       </div>
-      <div class="record-stage">
+      <div id="record-stage" class="record-stage">
+        <section id="record-result" class="record-result" aria-labelledby="result-heading" hidden><h3 id="result-heading">録画結果</h3><strong id="result-file-name"></strong><p id="result-location" class="hint"></p><div class="actions"><button id="play-result" class="secondary">録画を再生</button><button id="show-record-file" class="secondary" hidden>保存場所を表示</button></div><video id="result-playback" controls playsinline preload="none" aria-label="録画結果の再生" hidden></video><p id="result-preview-message" class="hint" role="status" hidden></p></section>
         <div id="preview-stage" class="preview-stage" data-phase="idle"><video id="preview" class="preview" muted autoplay playsinline aria-label="録画対象のプレビュー" hidden></video><div id="preview-placeholder" class="preview-placeholder"><span class="stage-illustration"><svg id="stage-icon" class="icon" aria-hidden="true"><use href="icons.svg#screen"></use></svg></span><strong id="stage-title">録画の準備</strong><p id="stage-hint">元のタブを録画します。</p></div><span id="live-badge" class="live-badge" hidden><span class="record-dot" aria-hidden="true"></span><span id="live-label">録画中</span></span></div>
         <div id="record-panel" class="record-panel" data-state="idle"><div class="record-panel-heading"><strong id="record-state" tabindex="-1">待機中</strong><div id="record-metrics" class="record-metrics" hidden><span id="record-time">00:00</span><span id="record-size">0 KiB</span></div></div><p id="record-description" class="hint" hidden></p><div class="record-actions"><button id="pause-record" class="secondary" hidden>一時停止</button><button id="stop-record" class="danger" hidden><svg class="icon" aria-hidden="true"><use href="icons.svg#stop"></use></svg>録画を停止</button></div><div id="audio-decision" class="audio-decision" hidden><p>音声を取得できませんでした。画面は共有中ですが、録画とファイルへの書き込みはまだ始まっていません。</p><div class="actions"><button id="continue-without-audio" class="primary">音声なしで録画</button><button id="reselect-capture" class="secondary">対象を選び直す</button><button id="cancel-record-start" class="secondary">中止</button></div></div><p id="record-message" role="status" aria-live="polite" hidden></p><div class="result-actions"><button id="save-record" class="primary" hidden><svg class="icon" aria-hidden="true"><use href="icons.svg#download"></use></svg>録画をファイルに保存</button><button id="discard-record" class="secondary" hidden>録画データを破棄</button></div></div>
       </div>

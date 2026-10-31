@@ -47,6 +47,10 @@ export class MediaSaver {
     if(previous && previous.outputFormat!==outputFormat)delete previous.blob;
     // Keep at most one retry buffer. Original source files remain available for re-fetch.
     for(const [url,result] of this.results)if(url!==item.url)delete result.blob;
+    for(const [url,result] of this.results) {
+      if(this.results.size<100)break;
+      if(url!==item.url && !result.blob)this.results.delete(url);
+    }
     this.busy=true;this.current=item.url;this.controller=new AbortController();
     return this.run(item,title,permission,previous,outputFormat);
   }
@@ -97,9 +101,15 @@ export class MediaSaver {
       objectURL=URL.createObjectURL(blob);
       const stem=sanitizePart(fileLabel(item.url).replace(/\.[a-z0-9]{2,5}$/i,''),'video');
       this.downloadId=await chrome.downloads.download({url:objectURL,filename:`VideoHarbor/${sanitizePart(title)}/${stem}.${extension}`,conflictAction:'uniquify',saveAs:false});
+      result.downloadId=this.downloadId;
       // The user may cancel while Chrome is accepting the download.
       if(signal.aborted)await chrome.downloads.cancel(this.downloadId).catch(()=>{});
       await this.waitForDownload(this.downloadId);
+      try {
+        const [saved]=await chrome.downloads.search({id:this.downloadId});
+        if(saved?.filename)result.filename=saved.filename;
+        if(typeof saved?.exists==='boolean')result.exists=saved.exists;
+      } catch { /* The confirmed completion remains valid if its optional location is unavailable. */ }
       result.status='complete';result.message=`保存完了 · ${extension.toUpperCase()}${result.audioUnverified ? ' · 音声の有無は未確認' : ''}`;delete result.blob;
     } catch(error) {
       result.status=error.origins ? 'permission' : 'interrupted';

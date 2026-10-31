@@ -103,9 +103,12 @@ try {
     await manager.bringToFront();await blueGroup.locator('.locate-source').click();
     await page.waitForFunction(()=>document.querySelector('#blue').style.outline==='rgb(77, 88, 99) dotted 2px' || document.querySelector('#blue').style.outline==='2px dotted rgb(77, 88, 99)');
     await manager.bringToFront();
+    await worker.evaluate(()=>{globalThis.__shownDownloads=[];chrome.downloads.show=id=>globalThis.__shownDownloads.push(id);});
     await blueGroup.locator('.source-alternatives > summary').click();
     assert.equal(await blueGroup.locator('.source-alternatives .direct-save').isVisible(),true);
     await blueGroup.locator('.source-alternatives .direct-save').click();await manager.waitForFunction(()=>document.querySelector('#batch').textContent.includes('1件保存完了'));
+    await blueGroup.locator('.source-alternatives .show-file').click();
+    assert.equal(await worker.evaluate(()=>globalThis.__shownDownloads.length),1,'confirmed output has a folder action using its own download ID');
     await blueGroup.locator('.source-alternatives > summary').click();
     const hlsFormat=manager.locator('.video-card').filter({hasText:'stream.m3u8'}).locator('.output-format');
     await hlsFormat.selectOption('auto');
@@ -127,14 +130,15 @@ try {
     // The file choice stays visible when its settings disclosure is closed.
     await manager.evaluate(()=>{
       window.__diskWriteFailure=false;window.__diskCloseStarted=false;
-      Object.defineProperty(window,'showSaveFilePicker',{configurable:true,writable:true,value:async()=>({
+      Object.defineProperty(window,'showSaveFilePicker',{configurable:true,writable:true,value:async()=>{let chunks=[];return ({
         name:'synthetic-recording.webm',
+        getFile:async()=>new File(chunks,'synthetic-recording.webm',{type:'video/webm'}),
         createWritable:async()=>({
-          async write() {if(window.__diskWriteFailure)throw new Error('synthetic disk failure');},
+          async write(chunk) {if(window.__diskWriteFailure)throw new Error('synthetic disk failure');chunks.push(chunk);},
           async close() {window.__diskCloseStarted=true;await new Promise(resolve=>{window.__releaseDiskClose=resolve;});},
           async abort() {},
         }),
-      })});
+      });}});
       window.__fixtureFilePicker=window.showSaveFilePicker;
     });
     await manager.locator('.output-settings > summary').click();
@@ -195,6 +199,13 @@ try {
     assert.match(await manager.locator('#record-description').textContent(),/音声なし/);
     assert.equal(await manager.locator('#save-record').isVisible(),true);
     assert.equal(await manager.locator('#record-settings').isVisible(),false,'unsaved result takes priority over blocked settings');
+    assert.equal(await manager.locator('#record-result').isVisible(),true);
+    assert.match(await manager.locator('#result-location').textContent(),/まだファイルへ保存していません/);
+    await manager.locator('#play-result').click();
+    await manager.waitForFunction(()=>document.querySelector('#result-playback').readyState>=2 && document.querySelector('#result-playback').videoWidth===320);
+    const playerBox=await manager.locator('#result-playback').boundingBox(),panelBox=await manager.locator('#record-panel').boundingBox();
+    assert.ok(playerBox.y>=0 && playerBox.y+playerBox.height<=panelBox.y,'unsaved playback controls stay above the fixed save panel');
+    const playbackURL=await manager.locator('#result-playback').getAttribute('src');
     await manager.evaluate(()=>scrollTo(0,0));
     const saveBox=await manager.locator('#save-record').boundingBox();
     assert.ok(saveBox.y>=0 && saveBox.y+saveBox.height<=800,'unsaved recording save action remains in viewport at 360px');
@@ -212,11 +223,16 @@ try {
     assert.equal(await manager.locator('#record-panel').getAttribute('data-state'),'ready');
     assert.equal(await manager.locator('#save-record').isVisible(),true,'cancel keeps a retryable recording');
     assert.equal(await manager.locator('#start-record').isDisabled(),true);
+    assert.equal(await manager.locator('#result-playback').getAttribute('src'),playbackURL,'save cancellation preserves the playable recording');
     await assertFocused('record-state');
     await manager.locator('#save-record').click();await manager.waitForFunction(()=>document.querySelector('#record-state').textContent==='ファイル保存完了');
     assert.equal(await manager.locator('#download-tab').isDisabled(),false);
     await assertFocused('record-state');
     await screenshots('saved');
+    assert.equal(await manager.locator('#record-layout').evaluate(el=>el.firstElementChild.id),'record-stage','saved result precedes next-recording settings in keyboard and DOM order');
+    assert.match(await manager.locator('#result-file-name').textContent(),/\.webm$/);
+    await manager.locator('#show-record-file').click();
+    assert.equal(await worker.evaluate(()=>globalThis.__shownDownloads.length),2,'memory recording folder action uses a proven extension download');
     await manager.locator('#record-audio').uncheck();
     const [savedCapture]=await manager.evaluate(()=>chrome.downloads.search({urlRegex:'^blob:'}));
     const captureBytes=await readFile(savedCapture.filename);assert.ok(captureBytes.length>100);
@@ -235,6 +251,7 @@ try {
     assert.equal(await manager.locator('#record-panel').getAttribute('data-state'),'saved');
     assert.match(await manager.locator('#stage-hint').textContent(),/直前の録画/);
     assert.match(await manager.locator('#record-message').textContent(),/キャンセル.*保持/);
+    assert.equal(await manager.locator('#result-playback').getAttribute('src'),playbackURL,'new capture cancellation preserves the previous playback URL');
     // Native file APIs are synthetic, but MediaRecorder and UI finalization remain real.
     await manager.evaluate(()=>{navigator.mediaDevices.getDisplayMedia=window.__fixtureGetDisplayMedia;});
     await manager.locator('.output-settings > summary').click();
@@ -250,6 +267,10 @@ try {
     await assertFocused('record-state');
     await manager.evaluate(()=>window.__releaseDiskClose());
     await manager.waitForFunction(()=>document.querySelector('#record-panel').dataset.state==='saved');
+    assert.equal(await manager.locator('#show-record-file').isVisible(),false,'sequential file output does not invent a Chrome download location');
+    await manager.locator('#play-result').click();
+    await manager.waitForFunction(()=>document.querySelector('#result-playback').readyState>=2 && document.querySelector('#result-playback').videoWidth===320);
+    assert.match(await manager.locator('#result-file-name').textContent(),/synthetic-recording\.webm/);
     assert.equal(await manager.locator('#start-record').isDisabled(),true,'the selected output file belongs to one recording only');
     assert.match(await manager.locator('#chosen-file').textContent(),/未選択/);
     await manager.locator('#choose-file').click();
@@ -280,6 +301,54 @@ try {
     manager.once('dialog',dialog=>dialog.accept());await manager.locator('#discard-record').click();
     await manager.waitForFunction(()=>document.querySelector('#record-panel').dataset.state==='idle');
     await manager.evaluate(()=>{window.MediaRecorder=window.__NativeMediaRecorder;});
+    // Exercise the real File System Access writer against this disposable profile's
+    // origin-private files. Only the native save-picker boundary is substituted.
+    await manager.evaluate(async()=>{
+      const root=await navigator.storage.getDirectory();
+      window.__qaFsaA=await root.getFileHandle('qa-first.webm',{create:true});
+      window.__qaFsaB=await root.getFileHandle('qa-second.webm',{create:true});
+      const handles=[window.__qaFsaA,window.__qaFsaB];
+      window.showSaveFilePicker=async()=>handles.shift();
+      navigator.mediaDevices.getDisplayMedia=window.__fixtureGetDisplayMedia;
+    });
+    await manager.locator('.output-settings > summary').click();
+    await manager.locator('#record-output').selectOption('file');
+    await manager.locator('.output-settings > summary').click();
+    await manager.locator('#choose-file').click();await manager.locator('#start-record').click();
+    await manager.waitForFunction(()=>document.querySelector('#record-panel').dataset.state==='recording');
+    await manager.waitForTimeout(350);await manager.locator('#stop-record').click();
+    await manager.waitForFunction(()=>document.querySelector('#record-panel').dataset.state==='saved');
+    const firstFile=await manager.evaluate(async()=>{
+      const file=await window.__qaFsaA.getFile();
+      return {size:file.size,digest:[...new Uint8Array(await crypto.subtle.digest('SHA-256',await file.arrayBuffer()))]};
+    });
+    assert.ok(firstFile.size>100,'the first sequential recording really exists in the disposable filesystem');
+    assert.equal(await manager.locator('#start-record').isDisabled(),true);
+    await manager.locator('#play-result').click();
+    await manager.waitForFunction(()=>document.querySelector('#result-playback').readyState>=2);
+    await manager.locator('#choose-file').click();
+    await manager.evaluate(()=>{navigator.mediaDevices.getDisplayMedia=()=>Promise.reject(new DOMException('cancel','NotAllowedError'));});
+    await manager.locator('#start-record').click();
+    await manager.waitForFunction(()=>document.querySelector('#record-panel').dataset.state==='saved' && !document.querySelector('#start-record').disabled);
+    await manager.evaluate(()=>{navigator.mediaDevices.getDisplayMedia=window.__fixtureGetDisplayMedia;});
+    await manager.locator('#start-record').click();
+    await manager.waitForFunction(()=>document.querySelector('#record-panel').dataset.state==='recording');
+    await manager.waitForTimeout(350);await manager.locator('#stop-record').click();
+    await manager.waitForFunction(()=>document.querySelector('#record-panel').dataset.state==='saved');
+    const files=await manager.evaluate(async()=>{
+      const first=await window.__qaFsaA.getFile(),second=await window.__qaFsaB.getFile();
+      return {firstSize:first.size,firstDigest:[...new Uint8Array(await crypto.subtle.digest('SHA-256',await first.arrayBuffer()))],secondSize:second.size};
+    });
+    assert.equal(files.firstSize,firstFile.size);assert.deepEqual(files.firstDigest,firstFile.digest,'second recording and capture cancellation preserve every byte of the first real file');
+    assert.ok(files.secondSize>100,'the second recording writes a different real file');
+    await screenshots('file-saved');
+    await manager.setViewportSize({width:1280,height:900});
+    const workspaceTab=await worker.evaluate(async url=>(await chrome.tabs.query({})).find(tab=>tab.url===url),manager.url());
+    await worker.evaluate(async id=>chrome.tabs.setZoom(id,2),workspaceTab.id);
+    assert.ok(await manager.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'Chrome 200% zoom keeps the saved result within the layout');
+    assert.equal(await manager.locator('#record-layout').evaluate(el=>el.firstElementChild.id),'record-stage');
+    await worker.evaluate(async id=>chrome.tabs.setZoom(id,1),workspaceTab.id);
+    await manager.setViewportSize({width:360,height:800});
     // Empty results expose working recovery actions without invoking capture automatically.
     const emptyPage=await context.newPage();await emptyPage.goto(origin+'/empty');
     const emptyTab=await worker.evaluate(async url=>(await chrome.tabs.query({})).find(t=>t.url===url),origin+'/empty');

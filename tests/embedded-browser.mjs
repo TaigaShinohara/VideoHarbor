@@ -173,6 +173,7 @@ try {
         <script>window.__PLAYER_CONFIG__ = {"sources":[{"file":"/inline-player.mp4"}]};</script>
         </head><body><video data-src="/lazy.mp4"></video>
         <iframe src="/same-frame"></iframe><iframe id="cross-frame" src="${other}/cross-frame"></iframe>
+        <iframe srcdoc="<video data-src='${origin}/srcdoc.mp4'></video>"></iframe>
         <iframe src="/iframe-video.mp4"></iframe>
         <a href="/unsupported.webm" type="video/webm">Known non-MP4 format</a>
         <a href="/ts/index.m3u8">TS HLS</a><a href="/mp4/index.m3u8">fMP4 HLS</a>
@@ -183,7 +184,7 @@ try {
   origin=`http://127.0.0.1:${server.address().port}`;other=`http://localhost:${server.address().port}`;
   const first=await openFixture('limited',manifest,origin);
   const {page,manager}=first;
-  for(const filename of ['lazy.mp4','metadata.mp4','structured.mp4','same.mp4','inline-player.mp4','iframe-video.mp4'])assert.equal(await manager.locator('#direct-list .video-card').filter({hasText:filename}).count(),1,`${filename} is discovered`);
+  for(const filename of ['lazy.mp4','metadata.mp4','structured.mp4','same.mp4','srcdoc.mp4','inline-player.mp4','iframe-video.mp4'])assert.equal(await manager.locator('#direct-list .video-card').filter({hasText:filename}).count(),1,`${filename} is discovered`);
   assert.equal(await manager.locator('#direct-list .video-card').filter({hasText:'cross.mp4'}).count(),0,'ungranted cross-origin iframe is not inspected');
   assert.equal(await manager.locator('.frame-permission').count(),1,'the missing iframe origin has a scoped permission action');
   const realGrants=await manager.evaluate(()=>chrome.permissions.getAll());
