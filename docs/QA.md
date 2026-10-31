@@ -4,13 +4,14 @@
 
 旧版の結果は以下に履歴として残す。今回の実装・検証の詳細と独立審査は [UX-COMPLETION.md](UX-COMPLETION.md)、本人が触れる合成ページと操作条件は [UX-MANUAL.md](UX-MANUAL.md)。
 
-- `npm test`: 197件PASS、失敗・SKIPなし。`npm run check`、`git diff --check`: PASS。隔離Chromeのbrowser smoke/embedded browser: PASS。
+- `npm test`: 199件PASS、失敗・SKIPなし。`npm run check`、`git diff --check`: PASS。隔離Chromeのbrowser smoke/embedded browser: PASS。
 
 - 録画: 順次保存の保存先を1試行で消費し、次回の新規選択が必要。音声ONでtrackなしは共有中・未録画の状態で利用者の判断を待ち、録画/書込を開始しない。開始取消・遅延capture/writer・共有終了・排他競合を単体試験し、独立審査した。
 - 候補: 実document出典を分離し、同名別動画を誤統合しない。旧500候補に新対象が押し出されないこと、同URL再読込の古いscanを拒否すること、実frame/documentでblob取得すること、相対予定名と実絶対pathを分離し再試行を保つことを試験した。
 - 画面: 同名/同hostの青・赤の動画と複数保存元、元ページの一時強調の連打と復旧、折り畳んだ保存元からの実download、出力形式の再スキャン保持、許可拒否/合成許可後のfocusを隔離Chromeで確認。
 - 結果: 停止後の実MediaRecorderデータを画面内で再生し、保存キャンセル/次のcaptureキャンセルで再生URLを保持。順次保存のclose済みhandleでも再生する。当拡張の実download IDを確認してフォルダ表示APIへ渡す（OSフォルダ表示の境界だけは合成）。古いgetFile/playのreject/finallyが次の結果を変更しない競合試験を追加した。
 - 実ファイルの保護: 隔離profileのorigin-private filesystemへ本物のFileSystemFileHandleで2本を書き込み、共有取消・2本目保存の後も1本目のサイズ/SHA-256が不変であることを確認。ネイティブ保存pickerと実ユーザーフォルダへの書込は別の未確認事項。
+- 結果再生中に「動画を保存」へ移ると非表示の再生を止め、録画画面へ戻っても結果URLを保持することをブラウザ試験で確認。読込中の画面切替も再生操作を無効化し、遅いgetFileの成功・失敗で非表示再生や古いエラーが発生しない回帰2件を追加した。
 - 狭幅: 未保存時の固定保存操作、再生コントロールを固定パネルより上へ収める実座標、保存後も結果→次設定となるDOM順、並べ替え後のfocusをブラウザで確認。1280/360の画面をAIが確認し、320pxのoverflow・reduced-motion・forced-colorsも回帰試験の対象とした。
 - Chromeの実tab zoom 200%で保存後の結果が横overflowせず、結果→次設定のDOM順が維持されることを確認。
 - 保存方式: 既存の直接MP4、HLS（TS/fMP4/別音声）、DASH、blob、TS→MP4を実取得・実Chrome download・ffprobe/ffmpeg全編decodeで回帰確認。通常iframe、許可済み別origin iframe、srcdoc iframeも実allFramesで収集できた。

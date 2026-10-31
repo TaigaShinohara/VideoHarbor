@@ -326,6 +326,11 @@ try {
     assert.equal(await manager.locator('#start-record').isDisabled(),true);
     await manager.locator('#play-result').click();
     await manager.waitForFunction(()=>document.querySelector('#result-playback').readyState>=2);
+    const filePlaybackURL=await manager.locator('#result-playback').getAttribute('src');
+    await manager.locator('#download-tab').click();
+    assert.equal(await manager.locator('#result-playback').evaluate(el=>el.paused),true,'leaving the recorder pauses hidden result playback');
+    await manager.locator('#record-tab').click();
+    assert.equal(await manager.locator('#result-playback').getAttribute('src'),filePlaybackURL,'view changes retain the saved result for replay');
     await manager.locator('#choose-file').click();
     await manager.evaluate(()=>{navigator.mediaDevices.getDisplayMedia=()=>Promise.reject(new DOMException('cancel','NotAllowedError'));});
     await manager.locator('#start-record').click();

@@ -69,6 +69,25 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const loadingState=h=>({message:h.message.textContent,hidden:h.message.hidden,
   loading:h.view.loading,disabled:h.play.disabled,src:h.player.src});
 
+for(const outcome of ['resolve','reject']) {
+  test(`leaving the recorder invalidates an outstanding file ${outcome} without discarding the result`,async t=>{
+    const h=harness(t),read=deferred();h.reads.push(read);
+    const pending=h.view.playResult();await tick();
+    h.view.pausePlayback();
+    if(outcome==='resolve')read.resolve(new Blob(['saved recording']));
+    else read.reject(new DOMException('read failed after navigation','NotFoundError'));
+    await pending;
+    assert.equal(h.player.playCalls,0,'an old read never starts hidden playback');
+    assert.equal(h.view.loading,false);assert.equal(h.play.disabled,false);
+    assert.equal(h.message.hidden,true);assert.deepEqual(h.revoked,[]);
+    if(outcome==='resolve') {
+      await h.view.playResult();
+      assert.equal(h.player.playCalls,1,'an explicit new play action can reuse the retained result');
+      assert.equal(h.created.length,1);
+    }
+  });
+}
+
 // The read belongs to A's File System Access handle, but B is now the current recording.
 // A's error handling and finally must not dismiss B's pending read or display A's failure.
 test('a replaced result file read cannot overwrite the next result loading state when it rejects',async t=>{
