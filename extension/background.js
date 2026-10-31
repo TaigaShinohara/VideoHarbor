@@ -1,6 +1,7 @@
 import { collect, locateSourceElement, inspectSourceDocument } from './collector.js';
 import { discoverySnapshot, migrateDiscovery, DISCOVERY_VERSION } from './discovery.js';
 import { readPageBlob } from './page-blob.js';
+import { validateOutputFormat } from './output-format.js';
 import { allowedURL, downloadName, summarizeJobs, publicError } from './utils.js';
 const KIND = 'videos';
 const PREFIX = 'workspace:';
@@ -93,6 +94,9 @@ async function refreshJob(job) {
   if (item.error) job.error = item.error;
   if (item.state === 'complete' && /^(text\/html|application\/(json|xml))/i.test(item.mime || '')) {
     job.status='interrupted'; job.error='メディアではない応答が保存されました。サイトの認証・制限を確認してください。';
+  }
+  if(item.state==='complete' && job.outputFormat==='mp4' && /^video\//i.test(item.mime || '') && !/^video\/(?:mp4|x-m4v)(?:;|$)/i.test(item.mime)) {
+    job.status='interrupted';job.error='選択したMP4と異なる形式の応答が保存されました。保存先のファイルと配信元を確認してください。';
   }
 }
 async function ownedDownload(state, id) {
@@ -189,7 +193,10 @@ chrome.runtime.onMessage.addListener((message,sender,respond) => {
         const chosen = new Set(message.urls);
         const items = state.items.filter(item=>chosen.has(item.url) && allowedURL(item.url,KIND) && (KIND !== 'videos' || item.type === 'direct'));
         if (!items.length) throw new Error('保存する対象を選んでください。');
-        state.jobs = items.map((item,i)=>({url:item.url,status:'queued',filename:downloadName(item,state.title,i,KIND)}));
+        state.jobs = items.map((item,i)=>{
+          const outputFormat=validateOutputFormat(item,message.outputFormat===undefined ? 'auto' : message.outputFormat);
+          return {url:item.url,status:'queued',outputFormat,filename:downloadName(item,state.title,i,KIND,outputFormat)};
+        });
         return pump(state);
       }
       case 'cancel': {

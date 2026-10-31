@@ -255,3 +255,82 @@ test('media host preflight rejects more than 32 distinct origins before permissi
   assert.deepEqual(missing,['https://same.test/*'],'segment count does not multiply host requests');
   assert.equal(h.calls.filter(call=>call[0]==='contains').length,1);
 });
+
+test('output format validation happens synchronously before any permission prompt or retry-buffer mutation',async t=>{
+  const h=harness(t),item={...blobItem,mime:'video/webm'};
+  const previous={status:'permission',origins:['https://cdn.test/*'],blob:new Blob(['old']),outputFormat:'auto'};
+  h.saver.results.set(item.url,previous);
+  assert.throws(()=>h.saver.start(item,'Title','mp4'),/MP4形式ではありません/);
+  assert.throws(()=>h.saver.start(item,'Title','bogus'),/保存形式/);
+  assert.equal(h.calls.length,0);assert.equal(h.saver.busy,false);
+  assert.equal(h.saver.status(item.url),previous);assert.equal(previous.blob.size,3);
+});
+
+test('selected MP4 inspects the actual unknown blob MIME before reading chunks or creating a download',async t=>{
+  const calls=[];
+  const h=harness(t,{readBlob:async(url,offset,token)=>{
+    calls.push({offset,token});return offset===-2 ? {released:true} : {size:3,mime:'video/webm',bytes:[]};
+  }});
+  await h.saver.start(blobItem,'Title','mp4');
+  const result=h.saver.status(blobItem.url);
+  assert.equal(result.outputFormat,'mp4');assert.equal(result.status,'interrupted');assert.match(result.message,/MP4ではありません/);
+  assert.deepEqual(calls.map(call=>call.offset),[-1,-2]);assert.equal(calls[0].token,calls[1].token);
+  assert.equal(h.calls.some(call=>call[0]==='download' || call[0]==='objectURL'),false);
+});
+
+test('a pending save keeps the clicked MP4 format when another format start is attempted',async t=>{
+  const metadata=deferred();let entered=false;
+  const h=harness(t,{readBlob:async(url,offset)=>{
+    if(offset===-2)return {released:true};
+    if(offset===-1){entered=true;await metadata.promise;}
+    return {size:3,mime:'video/mp4',bytes:offset<0 ? [] : [1,2,3]};
+  }});
+  const saving=h.saver.start(blobItem,'Title','mp4');await eventually(()=>entered);
+  assert.equal(h.saver.status(blobItem.url).outputFormat,'mp4');
+  await h.saver.start(blobItem,'Title','auto');
+  assert.equal(h.saver.status(blobItem.url).outputFormat,'mp4');
+  metadata.resolve();await saving;
+  assert.equal(h.saver.status(blobItem.url).status,'complete');assert.equal(h.saver.status(blobItem.url).outputFormat,'mp4');
+  assert.match(h.calls.find(call=>call[0]==='download')[1].filename,/\.mp4$/);
+});
+
+test('same-format MP4 retry reuses its buffer and keeps output format after download interruption',async t=>{
+  let reads=0;
+  const h=harness(t,{state:'interrupted',readBlob:async(url,offset)=>{
+    if(offset===-2)return {released:true};reads++;
+    return {size:3,mime:'video/mp4',bytes:offset<0 ? [] : [1,2,3]};
+  }});
+  await h.saver.start(blobItem,'Title','mp4');const first=h.saver.status(blobItem.url),readCount=reads;
+  assert.equal(first.status,'interrupted');assert.equal(first.outputFormat,'mp4');assert.equal(first.blob.type,'video/mp4');
+  h.state='complete';await h.saver.start(blobItem,'Title','mp4');
+  assert.equal(reads,readCount);assert.equal(h.saver.status(blobItem.url).status,'complete');
+  const blobs=h.calls.filter(call=>call[0]==='objectURL').map(call=>call[1]);assert.equal(blobs[0],blobs[1]);
+});
+
+test('changing output format discards the old retry blob and re-reads the source snapshot',async t=>{
+  let snapshots=0;
+  const h=harness(t,{state:'interrupted',readBlob:async(url,offset)=>{
+    if(offset===-2)return {released:true};if(offset===-1)snapshots++;
+    const size=snapshots===1 ? 3 : 5;return {size,mime:'video/mp4',bytes:offset<0 ? [] : Array(size).fill(snapshots)};
+  }});
+  await h.saver.start(blobItem,'Title','auto');const previous=h.saver.status(blobItem.url);
+  assert.equal(previous.blob.size,3);assert.equal(previous.outputFormat,'auto');
+  h.state='complete';await h.saver.start(blobItem,'Title','mp4');
+  assert.equal(previous.blob,undefined);assert.equal(snapshots,2);
+  assert.equal(h.saver.status(blobItem.url).outputFormat,'mp4');assert.equal(h.saver.status(blobItem.url).bytesReceived,5);
+  const blobs=h.calls.filter(call=>call[0]==='objectURL').map(call=>call[1]);assert.notEqual(blobs[0],blobs[1]);
+  assert.deepEqual([...new Uint8Array(await blobs[1].arrayBuffer())],[2,2,2,2,2]);
+});
+
+test('changed-format retry cannot save a stale MP4 buffer when the new source is now WebM',async t=>{
+  let snapshots=0;
+  const h=harness(t,{state:'interrupted',readBlob:async(url,offset)=>{
+    if(offset===-2)return {released:true};if(offset===-1)snapshots++;
+    return {size:3,mime:snapshots===1 ? 'video/mp4' : 'video/webm',bytes:offset<0 ? [] : [1,2,3]};
+  }});
+  await h.saver.start(blobItem,'Title','auto');const previous=h.saver.status(blobItem.url);assert.ok(previous.blob);
+  h.state='complete';await h.saver.start(blobItem,'Title','mp4');
+  assert.equal(previous.blob,undefined);assert.equal(h.saver.status(blobItem.url).status,'interrupted');
+  assert.match(h.saver.status(blobItem.url).message,/MP4ではありません/);
+  assert.equal(h.calls.filter(call=>call[0]==='download').length,1);
+});

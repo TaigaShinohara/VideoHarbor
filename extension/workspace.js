@@ -1,6 +1,7 @@
 import { fileLabel, extensionOf, matchesImage, summarizeJobs, formatBytes, publicError } from './utils.js';
 import { RecorderController } from './recorder.js';
 import { MediaSaver, originPattern } from './media-save.js';
+import { outputOptions, validateOutputFormat, originalExtension } from './output-format.js';
 const KIND = 'videos';
 const $ = id => document.getElementById(id);
 const sessionId = new URL(location.href).searchParams.get('id');
@@ -9,6 +10,7 @@ let state, selected = new Set(), visible = [], loading = false, requestPending =
 let recorder = null;
 let initialRecorderMessage = '', previousRecordingPhase = '';
 const handledCompletions = new Set();
+const formatSelections=new Map();
 const mediaSaver=new MediaSaver({onUpdate:updateMediaUI,readBlob:(url,offset,token)=>send('blob-read',{url,offset,token})});
 async function send(type, extra = {}) {
   const response = await chrome.runtime.sendMessage({type, sessionId, instance, ...extra});
@@ -29,10 +31,11 @@ function jobFor(url) { return mediaSaver.status(url) || state.jobs.find(job=>job
 function jobLabel(job) {
   if (!job) return '';
   if(job.message)return job.message+(job.status==='fetching' ? ` · ${formatBytes(job.bytesReceived)}` : '');
-  if (job.status === 'complete') return '保存完了';
-  if (job.status === 'interrupted') return `中断 · ${job.error || '再試行できます'}`;
-  if (job.status === 'queued') return '順番待ち';
-  return `保存中 · ${formatBytes(job.bytesReceived)}${job.totalBytes > 0 ? ' / '+formatBytes(job.totalBytes) : ''}`;
+  const format=/\.([a-z0-9]{2,5})$/i.exec(job.filename || '')?.[1].toUpperCase(),suffix=format ? ` · ${format}` : '';
+  if (job.status === 'complete') return `保存完了${suffix}`;
+  if (job.status === 'interrupted') return `中断${suffix} · ${job.error || '再試行できます'}`;
+  if (job.status === 'queued') return `順番待ち${suffix}`;
+  return `保存中${suffix} · ${formatBytes(job.bytesReceived)}${job.totalBytes > 0 ? ' / '+formatBytes(job.totalBytes) : ''}`;
 }
 function statusElement(item) { const span = element('span','item-status',jobLabel(jobFor(item.url))); span.dataset.url=item.url;span.dataset.state=jobFor(item.url)?.status || '';  return span; }
 function applyState(next) {
@@ -66,7 +69,7 @@ function updateSummary() {
     $('select-visible').disabled=busy || !visible.length;
     $('clear').disabled=busy || !selected.size;
     for(const el of document.querySelectorAll('.image-select')) el.disabled=busy;
-  } else for(const el of document.querySelectorAll('.direct-save,.media-save,.frame-permission')) el.disabled=busy;
+  } else for(const el of document.querySelectorAll('.direct-save,.media-save,.frame-permission,.output-format')) el.disabled=busy;
   $('record-tab').disabled=mediaSaver.busy;
 }
 function updateMediaUI() {
@@ -133,7 +136,7 @@ function renderVideos() {
   $('direct-list').replaceChildren();$('unsupported-list').replaceChildren();
   for(const item of [...direct,...other]) {
     const card=element('article','video-card'), info=element('div','video-info');
-    const format=item.type==='direct' ? extensionOf(item.url,'videos').toUpperCase() : item.type==='blob' ? 'ページ内動画' : item.type.toUpperCase();
+    const format=item.type==='direct' ? (originalExtension(item) || extensionOf(item.url,'videos')).toUpperCase() : item.type==='blob' ? 'ページ内動画' : item.type.toUpperCase();
     const fileIcon=element('div','file-icon');fileIcon.setAttribute('aria-hidden','true');fileIcon.append(icon('file'),element('span','',format));
     info.append(element('h3','file-name',fileLabel(item.url)));
     let host='ページ内データ';try{host=new URL(item.url).hostname || host;}catch{}
@@ -144,15 +147,34 @@ function renderVideos() {
     if(item.type==='hls')info.append(element('p','hint','HLSをファイルにまとめて保存 · 最大256 MiB · 単独リストでは別音声を判別できません'));
     if(item.type==='dash')info.append(element('p','hint','DASHの映像・音声をMP4にまとめて保存 · 最大256 MiB'));
     if(item.type==='blob')info.append(element('p','hint','元ファイル型のページ内動画を取得 · 分割再生用blobは未対応'));
+    if(supported(item)) {
+      const options=outputOptions(item),format=element('select','output-format');format.dataset.url=item.url;
+      format.id=`format-${$('direct-list').children.length}`;
+      format.setAttribute('aria-label',`${fileLabel(item.url)}の保存形式`);
+      for(const option of options){const node=element('option','',option.label);node.value=option.value;node.disabled=Boolean(option.disabled);format.append(node);}
+      const knownBlobMP4=/^video\/(?:mp4|x-m4v)(?:;|$)/i.test(item.mime || '');
+      const preferred=options.find(option=>option.value==='mp4' && !option.disabled) && (item.type!=='blob' || knownBlobMP4) ? 'mp4' : 'auto';
+      const previous=formatSelections.get(item.url);
+      format.value=options.some(option=>option.value===previous && !option.disabled) ? previous : preferred;
+      formatSelections.set(item.url,format.value);
+      format.addEventListener('change',()=>{if(isBusy() || recorder?.busy){format.value=formatSelections.get(item.url);return;}formatSelections.set(item.url,format.value);});
+      const choice=element('div','format-choice'),label=element('label','','保存形式');label.htmlFor=format.id;
+      choice.append(label,format);info.append(choice);
+      const reason=options.find(option=>option.value==='mp4')?.reason;
+      if(reason){const hint=element('p','hint format-hint',reason);hint.id=`${format.id}-hint`;format.setAttribute('aria-describedby',hint.id);info.append(hint);}
+    }
     const button=element('button',supported(item) ? `primary ${item.type==='direct' ? 'direct-save' : 'media-save'}` : 'secondary');
     button.dataset.url=item.url;
     button.append(icon(supported(item) ? 'download' : 'record'),document.createTextNode(supported(item) ? '保存' : '録画へ'));
     button.setAttribute('aria-label',`${fileLabel(item.url)}${supported(item) ? 'を保存' : 'の録画設定へ'}`);
     button.addEventListener('click',()=>{
-      if(item.type==='direct')return saveURLs([item.url]);
       if(!supported(item))return showView('record');
       if(isBusy() || recorder?.busy)return;
-      void mediaSaver.start(item,state.title).catch(error);
+      try {
+        const outputFormat=validateOutputFormat(item,formatSelections.get(item.url) || 'auto');
+        if(item.type==='direct')return saveURLs([item.url],outputFormat);
+        void mediaSaver.start(item,state.title,outputFormat).catch(error);
+      } catch(e){error(e);}
     });
     card.append(fileIcon,info,button);$(supported(item) ? 'direct-list' : 'unsupported-list').append(card);
   }
@@ -191,10 +213,10 @@ function render() {
   $('notices').textContent=state.notices.join(' ');$('notices').hidden=!state.notices.length;
   KIND === 'images' ? renderImages() : renderVideos();
 }
-async function saveURLs(urls) {
+async function saveURLs(urls,outputFormat='auto') {
   if(isBusy()) return;
   requestPending=true;clearError();updateSummary();
-  try{applyState(await send('save',{urls}));}catch(e){error(e);}finally{requestPending=false;updateSummary();}
+  try{applyState(await send('save',{urls,outputFormat}));}catch(e){error(e);}finally{requestPending=false;updateSummary();}
 }
 async function jobAction(type) {
   if(requestPending || mediaSaver.busy || recorder?.busy) return;requestPending=true;clearError();updateSummary();
