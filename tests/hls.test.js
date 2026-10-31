@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { prepareHLS, downloadHLS } from '../extension/hls.js';
+import { prepareHLS, downloadHLS, downloadHLSParts } from '../extension/hls.js';
+import {createMediaBudget,validateMediaSegment,MEDIA_BOX_LIMIT} from '../extension/media-validation.js';
 
 const base = 'https://media.test/path/list.m3u8';
 const vod = (...lines) => ['#EXTM3U', '#EXT-X-TARGETDURATION:10', ...lines, '#EXT-X-ENDLIST'].join('\n');
@@ -14,6 +15,53 @@ function box(name, payload = new Uint8Array()) {
 const concat = (...parts) => new Uint8Array(parts.flatMap(part => [...part]));
 const init = concat(box('ftyp'), box('moov'));
 const fragment = concat(box('styp'), box('moof'), box('mdat', new Uint8Array([1, 2, 3])));
+
+test('HLS binary validation: unknown, extended and zero-sized terminal boxes keep transport compatibility',()=>{
+  const extended=new Uint8Array(16);new DataView(extended.buffer).setUint32(0,1);extended.set([...`free`].map(c=>c.charCodeAt(0)),4);new DataView(extended.buffer).setBigUint64(8,16n);
+  const initBytes=concat(box('unKN'),extended,init),budget=createMediaBudget();
+  assert.equal(validateMediaSegment(initBytes,'mp4',true,budget),initBytes);
+  const ending=box('mdat',new Uint8Array([1,2]));new DataView(ending.buffer).setUint32(0,0);
+  const media=concat(box('moof'),ending);
+  assert.equal(validateMediaSegment(media,'mp4',false,budget),media);
+  assert.equal(budget.boxes,6);
+  const oversized=extended.slice();new DataView(oversized.buffer).setBigUint64(8,0xffffffffffffffffn);
+  assert.throws(()=>validateMediaSegment(oversized,'mp4',true),/壊れています/);
+});
+
+test('HLS binary validation: exact shared box limit is allowed and the next box is refused',()=>{
+  const budget={boxes:MEDIA_BOX_LIMIT-2};
+  validateMediaSegment(init,'mp4',true,budget);assert.equal(budget.boxes,MEDIA_BOX_LIMIT);
+  assert.throws(()=>validateMediaSegment(fragment,'mp4',false,budget),/ボックス数/);
+  assert.equal(budget.boxes,MEDIA_BOX_LIMIT,'limit failure occurs before consuming another metadata slot');
+  for(const boxes of [-1,MEDIA_BOX_LIMIT+1,1.5,NaN])assert.throws(()=>validateMediaSegment(init,'mp4',true,{boxes}),/構造上限/);
+});
+
+test('HLS binary validation: a small input with 250001 actual boxes stops at the total structure budget',()=>{
+  const bytes=new Uint8Array((MEDIA_BOX_LIMIT+1)*8),view=new DataView(bytes.buffer);
+  for(let at=0;at<bytes.length;at+=8){view.setUint32(at,8);view.setUint32(at+4,0x66726565);}
+  view.setUint32(4,0x66747970);view.setUint32(12,0x6d6f6f76);
+  const budget=createMediaBudget();
+  assert.throws(()=>validateMediaSegment(bytes,'mp4',true,budget),/ボックス数/);
+  assert.deepEqual(budget,{boxes:MEDIA_BOX_LIMIT});
+});
+
+test('HLS download: init and segments consume a caller-owned budget across successive tracks',async()=>{
+  const budget={boxes:MEDIA_BOX_LIMIT-5};
+  const plan={extension:'mp4',segments:[{url:'https://media.test/init.mp4',init:true},{url:'https://media.test/1.m4s'}]};
+  const fetch=async url=>new Response(url.endsWith('init.mp4') ? init : fragment);
+  assert.equal((await downloadHLSParts(plan,fetch,{structureBudget:budget})).length,2);
+  assert.equal(budget.boxes,MEDIA_BOX_LIMIT);
+  await assert.rejects(downloadHLSParts(plan,fetch,{structureBudget:budget}),/ボックス数/);
+});
+
+test('HLS download: async binary validation returns owned bytes and cancellation prevents accepting them',async()=>{
+  const plan={extension:'ts',segments:[{url:'https://media.test/1.ts'}]},controller=new AbortController();
+  let calls=0;
+  await assert.rejects(downloadHLSParts(plan,async()=>new Response(packet()),{signal:controller.signal,validateSegment:async(bytes,extension,isInit,budget)=>{
+    calls++;assert.equal(extension,'ts');assert.deepEqual(budget,{boxes:0});controller.abort();return bytes;
+  }}),{name:'AbortError'});
+  assert.equal(calls,1);
+});
 function resources(entries) {
   const calls = [];
   const fetch = async (url, options = {}) => {

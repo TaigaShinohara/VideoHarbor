@@ -1,5 +1,6 @@
 // Bounded HLS VOD planning and fetching. Separate fMP4 tracks are handed to
 // stream-assembly.js. No decryption, transcoding or playback capture. RFC 8216.
+import {createMediaBudget,validateMediaSegment} from './media-validation.js';
 const MANIFEST_LIMIT = 1024 * 1024;
 const SEGMENT_LIMIT = 5000;
 const DEPTH_LIMIT = 5;
@@ -270,36 +271,8 @@ export async function prepareHLS(url, fetchResource, { signal, _audio = false } 
   return resolve(resourceURL(url), 0, new Set(), _audio);
 }
 
-function boxes(bytes) {
-  const result = [];
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  let offset = 0;
-  while (offset < bytes.length) {
-    if (bytes.length - offset < 8) throw error('MP4の動画区間が途中で終わっています。');
-    let size = view.getUint32(offset), header = 8;
-    const type = String.fromCharCode(...bytes.subarray(offset + 4, offset + 8));
-    if (size === 1) {
-      if (bytes.length - offset < 16) throw error('MP4の動画区間が途中で終わっています。');
-      size = view.getUint32(offset + 8) * 4294967296 + view.getUint32(offset + 12); header = 16;
-    } else if (size === 0) size = bytes.length - offset;
-    if (!Number.isSafeInteger(size) || size < header || size > bytes.length - offset) throw error('MP4の動画区間が壊れています。');
-    result.push(type); offset += size;
-  }
-  return result;
-}
-function validateSegment(bytes, extension, init) {
-  if (!bytes.length) throw error('空の動画区間が返されました。');
-  if (extension === 'ts') {
-    if (bytes.length % 188 || bytes[0] !== 0x47) throw error('このHLSの動画形式には未対応です。TSとして保存できないため中断しました。');
-    for (let i = 188; i < bytes.length; i += 188) if (bytes[i] !== 0x47) throw error('TSの動画区間が壊れています。');
-  } else {
-    const types = boxes(bytes);
-    if (init ? !types.includes('ftyp') || !types.includes('moov') || types.includes('moof') : !types.includes('moof') || !types.includes('mdat') || types.includes('moov')) {
-      throw error('このHLSのMP4構成には未対応です。形式を変えて保存できないため中断しました。');
-    }
-  }
-}
-export async function downloadHLSParts(plan, fetchResource, { signal, onProgress, maxBytes = DOWNLOAD_LIMIT } = {}) {
+export async function downloadHLSParts(plan, fetchResource, { signal, onProgress, maxBytes = DOWNLOAD_LIMIT,
+  structureBudget=createMediaBudget(),validateSegment=validateMediaSegment } = {}) {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > DOWNLOAD_LIMIT) throw error('HLS保存の容量上限が不正です。');
   if (!['ts', 'mp4'].includes(plan?.extension) || !Array.isArray(plan.segments) || !plan.segments.length || plan.segments.length > SEGMENT_LIMIT + 1) throw error('HLSの保存計画が不正です。');
   if (plan.extension === 'mp4' && (!plan.segments[0].init || plan.segments.slice(1).some(segment => segment.init))) throw error('MP4の初期化データが不正です。');
@@ -317,8 +290,9 @@ export async function downloadHLSParts(plan, fetchResource, { signal, onProgress
       onProgress?.({ bytesReceived, completed, total: plan.segments.length });
     });
     if (segment.range && bytes.length !== segment.range.end - segment.range.start + 1) throw error('部分取得した動画データの長さが一致しません。');
-    validateSegment(bytes, plan.extension, segment.init);
-    parts.push(bytes); completed++;
+    const checked=await validateSegment(bytes,plan.extension,segment.init,structureBudget);
+    abort(signal);
+    parts.push(checked); completed++;
     onProgress?.({ bytesReceived, completed, total: plan.segments.length });
   }
   abort(signal);

@@ -53,6 +53,69 @@ function track(type,options={}) {
 }
 const output=async tracks=>new Uint8Array(await muxFragmentedMP4(tracks).arrayBuffer());
 
+function rangeSegment(offsets,sizes) {
+  const tfhd=full('tfhd',numbers(7,1,1,0),0x020038),time=new Uint8Array(8);
+  const runs=offsets.map((offset,i)=>full('trun',offset===undefined ? numbers(1,sizes[i]) : numbers(1,0,sizes[i]),offset===undefined ? 0x200 : 0x201));
+  const moof=box('moof',full('mfhd',numbers(1)),box('traf',tfhd,full('tfdt',time,0,1),...runs));
+  const actualRuns=boxes(moof,path(moof,'moof','traf').data,path(moof,'moof','traf').end).filter(entry=>entry.type==='trun');
+  for(let i=0;i<offsets.length;i++)if(offsets[i]!==undefined)data(moof).setInt32(actualRuns[i].data+8,moof.length+8+offsets[i]);
+  return concat(moof,box('mdat',ascii('abcd')));
+}
+
+// Construct high-cardinality metadata without spreading a large array as JS
+// arguments. One-byte samples use tfhd defaults and implicit contiguous offsets.
+function manyRunsSegment(count,emptyMdats) {
+  const tfhd=full('tfhd',numbers(7,1,1,0),0x020038),time=new Uint8Array(8);
+  const prefix=box('moof',full('mfhd',numbers(1)),box('traf',tfhd,full('tfdt',time,0,1)));
+  const moofSize=prefix.length+count*16+4;
+  const bytes=new Uint8Array(moofSize+8*(emptyMdats+1)+count);
+  bytes.set(prefix);data(bytes).setUint32(0,moofSize);data(bytes).setUint32(24,moofSize-24);
+  let at=prefix.length;
+  for(let i=0;i<count;i++) {
+    const run=full('trun',i ? numbers(1) : numbers(1,moofSize+8*(emptyMdats+1)),i ? 0 : 1);
+    bytes.set(run,at);at+=run.length;
+  }
+  for(let i=0;i<emptyMdats;i++){bytes.set(box('mdat'),at);at+=8;}
+  data(bytes).setUint32(at,8+count);bytes.set(ascii('mdat'),at+4);
+  return bytes;
+}
+
+test('MP4 mux: nonphysical run order and implicit adjacent ranges preserve original run metadata',async()=>{
+  const source=track('video');source.segments=[rangeSegment([2,0,undefined],[2,1,1])];
+  const original=source.segments[0],bytes=await output([source]);
+  const beforeTraf=path(original,'moof','traf'),afterTraf=path(bytes,'moof','traf');
+  const runs=(value,traf)=>boxes(value,traf.data,traf.end).filter(entry=>entry.type==='trun').map(entry=>value.slice(entry.start,entry.end));
+  assert.deepEqual(runs(bytes,afterTraf),runs(original,beforeTraf),'validation sorting does not reorder or rewrite trun/sample metadata');
+  const mdat=path(bytes,'mdat');assert.deepEqual(bytes.slice(mdat.data,mdat.end),ascii('abcd'));
+});
+
+test('MP4 mux: sorted validation still rejects overlap, nested ranges, mdat headers and negative positions',()=>{
+  for(const [offsets,sizes] of [[[0,1],[2,2]],[[0,0],[4,1]],[[2,0],[2,3]],[[-1],[1]],[[-100000],[1]],[[3],[2]]]) {
+    const source=track('video');source.segments=[rangeSegment(offsets,sizes)];
+    assert.throws(()=>muxFragmentedMP4([source]),/範囲外か重複/);
+  }
+});
+
+test('MP4 mux: physical mdat sweep accepts separate payloads but rejects header or padding crossings',()=>{
+  const make=(offsets,sizes)=>{
+    const original=rangeSegment(offsets,sizes),moof=path(original,'moof');
+    return concat(original.slice(moof.start,moof.end),box('mdat',ascii('ab')),box('free',new Uint8Array(1)),box('mdat',ascii('cd')));
+  };
+  const source=track('video');source.segments=[make([19,0],[2,2])];
+  assert.equal(muxFragmentedMP4([source]).size,source.init.length+source.segments[0].length);
+  for(const [offset,size] of [[0,3],[2,1],[11,1],[18,1]]) {
+    source.segments=[make([offset],[size])];
+    assert.throws(()=>muxFragmentedMP4([source]),/範囲外か重複/);
+  }
+});
+
+test('MP4 mux: 120000 runs and 120000 empty mdats stay valid within the structural budget',{timeout:10000},()=>{
+  const source=track('video');source.segments=[manyRunsSegment(120000,120000)];
+  const merged=muxFragmentedMP4([source]);
+  assert.equal(merged.size,source.init.length+source.segments[0].length);
+  assert.equal(merged.type,'video/mp4');
+});
+
 test('MP4 mux: colliding track IDs are rewritten in tkhd, trex and every fragment without altering input',async()=>{
   const video=track('video'),audio=track('audio'),before=structuredClone([video,audio]);
   const bytes=await output([video,audio]),top=boxes(bytes),moov=top.find(box=>box.type==='moov');
