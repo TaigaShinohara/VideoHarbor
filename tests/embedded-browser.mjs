@@ -81,8 +81,11 @@ async function decode(path,expectedFormat) {
 }
 async function openFixture(profile,manifest,origin) {
   await writeFile(join(extension,'manifest.json'),JSON.stringify(manifest));
+  const downloadFolder=join(scratch,profile+'-downloads');await mkdir(downloadFolder);
+  const profileDefault=join(scratch,profile,'Default');await mkdir(profileDefault,{recursive:true});
+  await writeFile(join(profileDefault,'Preferences'),JSON.stringify({download:{default_directory:downloadFolder,prompt_for_download:false,directory_upgrade:true}}));
   context=await chromium.launchPersistentContext(join(scratch,profile),{
-    channel:process.env.CHROME_CHANNEL || 'chrome',headless:true,acceptDownloads:true,
+    channel:process.env.CHROME_CHANNEL || 'chrome',headless:true,acceptDownloads:false,
     viewport:{width:1280,height:900},ignoreDefaultArgs:['--disable-extensions'],
     args:['--enable-unsafe-extension-debugging','--autoplay-policy=no-user-gesture-required','--no-first-run'],
   });
@@ -97,19 +100,22 @@ async function openFixture(profile,manifest,origin) {
   const [manager]=await Promise.all([context.waitForEvent('page'),worker.evaluate(tab=>globalThis.__openWorkspace(tab),tab)]);
   manager.on('pageerror',e=>errors.push(e.message));
   await manager.waitForFunction(()=>document.querySelector('#message').textContent.includes('候補を取得'));
-  const downloadFolder=join(scratch,profile+'-downloads');await mkdir(downloadFolder);
   const session=await context.newCDPSession(manager);
-  await session.send('Browser.setDownloadBehavior',{behavior:'allow',downloadPath:downloadFolder,eventsEnabled:true});
+  const {targetInfo}=await session.send('Target.getTargetInfo');
+  await session.send('Browser.setDownloadBehavior',{behavior:'default',eventsEnabled:true,...(targetInfo.browserContextId ? {browserContextId:targetInfo.browserContextId} : {})});
   return {page,manager,worker};
 }
 const mediaButton=(manager,url)=>manager.locator(`button.media-save[data-url=${JSON.stringify(url)}]`);
+const saveButton=(manager,url)=>manager.locator(`button.media-save[data-url=${JSON.stringify(url)}],button.direct-save[data-url=${JSON.stringify(url)}]`);
 const mediaStatus=(manager,url)=>manager.locator(`.item-status[data-url=${JSON.stringify(url)}]`);
+const outputFormat=(manager,url)=>manager.locator(`select.output-format[data-url=${JSON.stringify(url)}]`);
 async function waitStatus(manager,url,status) {
   await manager.waitForFunction(({url,status})=>[...document.querySelectorAll('.item-status')].some(el=>el.dataset.url===url && el.dataset.state===status),{url,status},{timeout:15000});
 }
-async function saveAndDecode(manager,url,name,format,{standaloneHLS=false}={}) {
+async function saveAndDecode(manager,url,name,format,{standaloneHLS=false,selectedFormat}={}) {
+  if(selectedFormat)await outputFormat(manager,url).selectOption(selectedFormat);
   const previous=await manager.evaluate(async()=> (await chrome.downloads.search({})).map(item=>item.id));
-  await mediaButton(manager,url).click();
+  await saveButton(manager,url).click();
   await waitStatus(manager,url,'complete');
   if(standaloneHLS)assert.match(await mediaStatus(manager,url).textContent(),/音声の有無は未確認/,'standalone HLS file completion does not claim verified audio');
   else if(url.endsWith('.mpd') || url.includes('/split/'))assert.doesNotMatch(await mediaStatus(manager,url).textContent(),/音声の有無は未確認/,'an explicitly selected audio/video manifest is distinct from a standalone HLS child list');
@@ -117,6 +123,8 @@ async function saveAndDecode(manager,url,name,format,{standaloneHLS=false}={}) {
   assert.ok(saved,'the save started a real Chrome download');
   assert.equal(saved.state,'complete','Chrome completed the actual download');
   assert.equal(saved.exists,true,'Chrome reports the downloaded file exists');
+  assert.ok(saved.filename.startsWith(scratch+'/'),'downloads stay inside this test\'s temporary profile output');
+  assert.ok(saved.filename.toLowerCase().endsWith('.'+name.split('.').at(-1)),`the actual downloaded filename has the selected container extension: ${saved.filename}`);
   const destination=join(scratch,name);await cp(saved.filename,destination);
   await decode(destination,format);
 }
@@ -166,6 +174,7 @@ try {
         </head><body><video data-src="/lazy.mp4"></video>
         <iframe src="/same-frame"></iframe><iframe id="cross-frame" src="${other}/cross-frame"></iframe>
         <iframe src="/iframe-video.mp4"></iframe>
+        <a href="/unsupported.webm" type="video/webm">Known non-MP4 format</a>
         <a href="/ts/index.m3u8">TS HLS</a><a href="/mp4/index.m3u8">fMP4 HLS</a>
         <a href="/dash/manifest.mpd">DASH separate audio/video</a><a href="/split/master.m3u8">HLS separate audio/video</a></body></html>`);
     }catch(error){res.statusCode=500;res.end('Synthetic fixture error');}
@@ -180,6 +189,13 @@ try {
   const realGrants=await manager.evaluate(()=>chrome.permissions.getAll());
   assert.ok(!realGrants.origins.some(x=>x.includes('localhost')),'localhost host access has not been granted');
   assert.ok(!realGrants.origins.some(x=>x==='http://*/*' || x==='https://*/*'),'no wildcard host grant');
+
+  const directMP4=origin+'/lazy.mp4',unsupportedWebM=origin+'/unsupported.webm';
+  assert.equal(await outputFormat(manager,directMP4).inputValue(),'mp4','known MP4 candidates initially prefer MP4');
+  assert.equal(await outputFormat(manager,unsupportedWebM).inputValue(),'auto','known WebM keeps its original container');
+  assert.equal(await outputFormat(manager,unsupportedWebM).locator('option[value="mp4"]').isDisabled(),true,'unsupported WebM-to-MP4 conversion cannot be selected');
+  assert.match(await manager.locator('.video-card').filter({hasText:'unsupported.webm'}).locator('.format-hint').textContent(),/変換には対応していません/);
+  await saveAndDecode(manager,directMP4,'saved-direct.mp4','mp4',{selectedFormat:'mp4'});
 
   // Simulate declining only the browser confirmation boundary. The actual scan,
   // injection, HLS fetching, assembly, and download implementations remain intact.
@@ -202,6 +218,8 @@ try {
   assert.equal(permissionRequests[0].active,true,'iframe permission request is reached within the click gesture');
 
   const tsURL=origin+'/ts/index.m3u8';
+  assert.equal(await outputFormat(manager,tsURL).inputValue(),'mp4','HLS initially prefers actual MP4 output');
+  await outputFormat(manager,tsURL).selectOption('auto');
   const beforeRequests=requests.get('/ts/index.m3u8')||0;
   await manager.evaluate(()=>{window.__forceMissing=true;});
   await mediaButton(manager,tsURL).click();await waitStatus(manager,tsURL,'permission');
@@ -210,7 +228,7 @@ try {
   assert.match(await mediaStatus(manager,tsURL).textContent(),/許可されませんでした/);
   await mediaButton(manager,tsURL).click();await waitStatus(manager,tsURL,'permission');
   await manager.evaluate(()=>{window.__permissionAccept=true;});
-  await saveAndDecode(manager,tsURL,'saved-hls.ts','mpegts',{standaloneHLS:true});
+  await saveAndDecode(manager,tsURL,'saved-hls.ts','mpegts',{standaloneHLS:true,selectedFormat:'auto'});
   permissionRequests=await manager.evaluate(()=>window.__permissionRequests);
   for(const request of permissionRequests.slice(1)) {
     assert.deepEqual(request.origins,['http://127.0.0.1/*'],'HLS request names only its concrete local host');
@@ -219,11 +237,15 @@ try {
   await saveAndDecode(manager,origin+'/mp4/index.m3u8','saved-hls.mp4','mp4',{standaloneHLS:true});
   await saveAndDecode(manager,origin+'/dash/manifest.mpd','saved-dash.mp4','mp4');
   await saveAndDecode(manager,origin+'/split/master.m3u8','saved-split-hls.mp4','mp4');
+  await saveAndDecode(manager,tsURL,'saved-ts-remux.mp4','mp4',{standaloneHLS:true,selectedFormat:'mp4'});
   // Stop stays reachable even while a long candidate list is scrolled elsewhere.
   slowSegments=true;
   const downloadsBeforeStop=await manager.evaluate(async()=> (await chrome.downloads.search({})).length);
   await manager.setViewportSize({width:360,height:800});
   await mediaButton(manager,tsURL).click();await waitStatus(manager,tsURL,'fetching');
+  assert.ok(await manager.locator('.output-format').evaluateAll(controls=>controls.every(control=>control.disabled)),'all candidate format choices freeze during a save');
+  await outputFormat(manager,tsURL).evaluate(control=>{control.value='auto';control.dispatchEvent(new Event('change',{bubbles:true}));});
+  assert.equal(await outputFormat(manager,tsURL).inputValue(),'mp4','a scripted change cannot alter the in-flight format snapshot');
   await manager.evaluate(()=>scrollTo(0,0));
   assert.ok(await manager.locator('#media-cancel').evaluate(el=>{const r=el.getBoundingClientRect();return r.top>=0 && r.bottom<=innerHeight;}),'HLS Stop remains inside the viewport after scrolling');
   await manager.locator('#media-cancel').click();await waitStatus(manager,tsURL,'interrupted');
@@ -237,7 +259,27 @@ try {
     const video=document.createElement('video');video.src=url;document.body.append(video);return url;
   });
   await manager.locator('#scan').click();await mediaButton(manager,blobURL).waitFor();
-  await saveAndDecode(manager,blobURL,'saved-page-blob.mp4','mp4');
+  assert.equal(await outputFormat(manager,blobURL).inputValue(),'auto','a blob without DOM MIME starts with the original format');
+  await saveAndDecode(manager,blobURL,'saved-page-blob.mp4','mp4',{selectedFormat:'mp4'});
+  // The source DOM does not identify the blob container. An actual WebM Blob
+  // must still fail the runtime MIME check when MP4 is requested.
+  const webmBlobURL=await page.evaluate(async()=>{
+    const canvas=document.createElement('canvas');canvas.width=160;canvas.height=90;
+    const drawing=canvas.getContext('2d');drawing.fillStyle='#348c83';drawing.fillRect(0,0,160,90);
+    const stream=canvas.captureStream(12),chunks=[],recorder=new MediaRecorder(stream,{mimeType:'video/webm'});
+    const done=new Promise(resolve=>{recorder.ondataavailable=event=>chunks.push(event.data);recorder.onstop=resolve;});
+    recorder.start(100);await new Promise(resolve=>setTimeout(resolve,300));recorder.stop();await done;stream.getTracks().forEach(track=>track.stop());
+    const url=URL.createObjectURL(new Blob(chunks,{type:'video/webm'}));
+    const video=document.createElement('video');video.src=url;document.body.append(video);return url;
+  });
+  await manager.locator('#scan').click();await mediaButton(manager,webmBlobURL).waitFor();
+  assert.equal(await outputFormat(manager,webmBlobURL).inputValue(),'auto');
+  assert.equal(await outputFormat(manager,webmBlobURL).locator('option[value="mp4"]').isDisabled(),false,'unknown blob MIME can be inspected at runtime');
+  await outputFormat(manager,webmBlobURL).selectOption('mp4');
+  const beforeRejectedFormat=await manager.evaluate(async()=> (await chrome.downloads.search({})).length);
+  await mediaButton(manager,webmBlobURL).click();await waitStatus(manager,webmBlobURL,'interrupted');
+  assert.match(await mediaStatus(manager,webmBlobURL).textContent(),/MP4ではありません/);
+  assert.equal(await manager.evaluate(async()=> (await chrome.downloads.search({})).length),beforeRejectedFormat,'WebM bytes are not mislabeled or downloaded as MP4');
   const mseURL=await page.evaluate(()=>{
     window.__mse=new MediaSource();const url=URL.createObjectURL(window.__mse);
     const video=document.createElement('video');video.src=url;document.body.append(video);return url;
@@ -258,7 +300,7 @@ try {
   await granted.manager.setViewportSize({width:360,height:800});
   assert.ok(await granted.manager.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'embedded candidate controls fit a narrow viewport');
   assert.deepEqual(errors,[],'no uncaught extension page errors');
-  console.log('VideoHarbor embedded browser PASS: lazy/metadata/JSON-LD/player JSON/media iframe, same/cross-origin frame grants, scoped permission decline/retry, actual TS/fMP4/DASH/split-HLS/blob downloads with complete audio/video duration and full decode, MSE blob rejection. Native permission confirmation and real-site compatibility remain manual.');
+  console.log('VideoHarbor embedded browser PASS: discovery and scoped frame grants, format selection/defaults/freeze, actual native TS and remuxed TS-to-MP4, direct MP4/fMP4/DASH/split-HLS/blob downloads with complete audio/video duration and full decode, runtime WebM-as-MP4/MSE rejection. Native permission confirmation and real-site compatibility remain manual.');
   if(process.env.QA_KEEP)console.log(`QA files retained locally: ${scratch}`);
 } finally {
   await context?.close();

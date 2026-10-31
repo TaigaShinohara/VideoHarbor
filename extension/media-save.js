@@ -1,6 +1,8 @@
 import { prepareHLS } from './hls.js';
 import { prepareDASH } from './dash.js';
 import { assembleStream } from './stream-assembly.js';
+import { remuxTSToMP4 } from './ts-to-mp4.js';
+import { validateOutputFormat } from './output-format.js';
 import { sanitizePart, fileLabel, publicError } from './utils.js';
 
 export function originPattern(url) {
@@ -37,24 +39,27 @@ export class MediaSaver {
     }
   }
   // Invoke directly from a click. permissions.request must happen before the first await.
-  start(item,title) {
+  start(item,title,outputFormat='auto') {
     if(this.busy)return Promise.resolve();
+    validateOutputFormat(item,outputFormat);
     const previous=this.results.get(item.url);
     const permission=previous?.origins?.length ? chrome.permissions.request({origins:previous.origins}) : Promise.resolve(true);
+    if(previous && previous.outputFormat!==outputFormat)delete previous.blob;
     // Keep at most one retry buffer. Original source files remain available for re-fetch.
     for(const [url,result] of this.results)if(url!==item.url)delete result.blob;
     this.busy=true;this.current=item.url;this.controller=new AbortController();
-    return this.run(item,title,permission,previous);
+    return this.run(item,title,permission,previous,outputFormat);
   }
-  async run(item,title,permission,previous) {
+  async run(item,title,permission,previous,outputFormat) {
     let objectURL,blobToken;
-    const result={status:'preparing',message:'動画の配信情報を確認しています。',bytesReceived:0,audioUnverified:Boolean(previous?.audioUnverified)};
+    const sameFormat=previous?.outputFormat===outputFormat;
+    const result={status:'preparing',message:'動画の配信情報を確認しています。',bytesReceived:0,outputFormat,audioUnverified:sameFormat && Boolean(previous?.audioUnverified)};
     this.results.set(item.url,result);this.emit();
     try {
       if(!await permission)throw new Error('配信元へのアクセスは許可されませんでした。もう一度「保存」から試せます。');
       const signal=this.controller.signal;
       signal.throwIfAborted();
-      let blob=previous?.blob, extension=previous?.extension;
+      let blob=sameFormat ? previous?.blob : null, extension=sameFormat ? previous?.extension : undefined;
       if(!blob && ['hls','dash'].includes(item.type)) {
         const plan=await (item.type==='hls' ? prepareHLS : prepareDASH)(item.url,this.fetchResource.bind(this),{signal});
         const missing=await this.missing((plan.tracks ? plan.tracks.flatMap(t=>t.segments) : plan.segments).map(s=>s.url));
@@ -68,6 +73,7 @@ export class MediaSaver {
       } else if(!blob && item.type==='blob') {
         blobToken=crypto.randomUUID();
         const metadata=await this.readBlob(item.url,-1,blobToken);signal.throwIfAborted();
+        if(outputFormat==='mp4' && !/^video\/(?:mp4|x-m4v)(?:;|$)/i.test(metadata.mime))throw new Error('このページ内動画はMP4ではありません。「元の形式」で保存してください。');
         extension=/mp4|m4v/.test(metadata.mime) ? 'mp4' : /quicktime/.test(metadata.mime) ? 'mov' : /ogg/.test(metadata.mime) ? 'ogv' : 'webm';
         result.status='fetching';result.message='ページ内の動画ファイルを取得しています。';this.emit();
         const parts=[];let offset=0;
@@ -81,6 +87,12 @@ export class MediaSaver {
       }
       signal.throwIfAborted();
       if(!blob)throw new Error('この配信方式にはまだ対応していません。');
+      if(outputFormat==='mp4' && extension==='ts') {
+        result.status='converting';result.message='映像と音声を保ってMP4へまとめ直しています。';this.emit();
+        const bytes=new Uint8Array(await blob.arrayBuffer());signal.throwIfAborted();
+        blob=remuxTSToMP4(bytes);signal.throwIfAborted();extension='mp4';
+      }
+      if(outputFormat==='mp4' && extension!=='mp4')throw new Error('この形式のMP4変換には未対応です。「元の形式」を選んでください。');
       Object.assign(result,{blob,extension,status:'saving',message:'ファイルへ保存しています。',bytesReceived:blob.size});this.emit();
       objectURL=URL.createObjectURL(blob);
       const stem=sanitizePart(fileLabel(item.url).replace(/\.[a-z0-9]{2,5}$/i,''),'video');

@@ -65,3 +65,15 @@ test('public errors do not reproduce signed media URLs',()=>{
   assert.ok(!s.includes('secret'));assert.ok(s.includes('[URL]'));
   assert.match(publicError({name:'AbortError'}),/キャンセル/);
 });
+test('selected MP4 filenames apply only to video output and preserve source URLs and safe folder boundaries',()=>{
+  const item=Object.freeze({url:'https://media.test/movie.m4v?secret=synthetic'});
+  assert.match(downloadName(item,'Page',0,'videos'),/movie\.m4v$/);
+  assert.match(downloadName(item,'Page',0,'videos','auto'),/movie\.m4v$/);
+  const name=downloadName(item,'../../Page',0,'videos','mp4');
+  assert.match(name,/movie\.mp4$/);assert.equal(name.split('/').length,3);assert.ok(!name.includes('secret'));
+  assert.equal(item.url,'https://media.test/movie.m4v?secret=synthetic');
+  assert.match(downloadName({url:'https://media.test/image.png'},'Page',0,'images','mp4'),/\.png$/,'video selection does not alter image formats');
+  assert.match(downloadName({url:'https://media.test/endpoint'},'Page',0,'videos','mp4'),/\.mp4$/,'validated typed MP4 endpoints get a concrete extension');
+  assert.match(downloadName({url:'https://media.test/endpoint',mime:'video/mp4'},'Page',0,'videos','auto'),/\.mp4$/,'source naming uses known MIME for extensionless URLs');
+  assert.match(downloadName({url:'https://media.test/misleading.mp4',mime:'video/webm'},'Page',0,'videos','auto'),/\.webm$/,'auto naming agrees with the actual known source type');
+});

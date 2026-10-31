@@ -1,3 +1,4 @@
+import { originalExtension } from './output-format.js';
 export function sanitizePart(value, fallback = 'untitled') {
   const clean = String(value ?? '').normalize('NFKC')
     .replace(/[\x00-\x1f\x7f<>:"/\\|?*\u202a-\u202e\u2066-\u2069]/g, '_')
@@ -44,8 +45,8 @@ export function fileLabel(url) {
     return decodeURIComponent(u.pathname.split('/').pop() || u.hostname).slice(0, 120);
   } catch { return 'メディア'; }
 }
-export function downloadName(item, title, index, kind) {
-  const ext = extensionOf(item.url, kind);
+export function downloadName(item, title, index, kind, outputFormat='auto') {
+  const ext = outputFormat==='mp4' && kind==='videos' ? 'mp4' : kind==='videos' ? originalExtension(item) || extensionOf(item.url,kind) : extensionOf(item.url,kind);
   const raw = fileLabel(item.url).replace(/\.[a-z0-9]{2,5}$/i, '');
   return `${kind === 'images' ? 'ImageCrate' : 'VideoHarbor'}/${sanitizePart(title)}/${String(index + 1).padStart(3,'0')}_${sanitizePart(raw, 'media')}.${ext}`;
 }

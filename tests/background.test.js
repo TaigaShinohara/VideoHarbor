@@ -152,3 +152,72 @@ test('BG-03: a download completing just before cancel remains complete and is ne
   assert.equal(retried.data.jobs[0].status, 'complete');
   assert.deepEqual(h.requested, [], 'retry must never duplicate a completed file');
 });
+
+test('BG-format: direct MP4 choice preserves source URL and freezes output format across cancel/retry',async t=>{
+  const h=await browser(t),url='https://source.test/original.m4v?auth=synthetic';
+  h.state.items=[{url,type:'direct',mime:'video/x-m4v'}];h.persist();
+  const command={type:'save',urls:[url],outputFormat:'mp4'};
+  const saved=await h.send(command);assert.equal(saved.ok,true,saved.error);
+  assert.equal(saved.data.jobs[0].outputFormat,'mp4');assert.match(saved.data.jobs[0].filename,/\.mp4$/);
+  assert.equal(h.requested[0].url,url);assert.match(h.requested[0].filename,/\.mp4$/);
+  command.outputFormat='auto';
+  const canceled=await h.send({type:'cancel'});assert.equal(canceled.ok,true,canceled.error);
+  assert.equal(canceled.data.jobs[0].status,'interrupted');
+  const retried=await h.send({type:'retry',outputFormat:'auto'});assert.equal(retried.ok,true,retried.error);
+  assert.equal(retried.data.jobs[0].outputFormat,'mp4','retry uses the accepted job format');
+  assert.equal(h.requested.length,2);assert.match(h.requested[1].filename,/\.mp4$/);assert.equal(h.requested[1].url,url);
+});
+
+test('BG-format: auto preserves WebM and omitted output defaults to auto',async t=>{
+  const h=await browser(t),url='https://source.test/original.webm';
+  h.state.items=[{url,type:'direct',mime:'video/webm'}];h.persist();
+  const response=await h.send({type:'save',urls:[url]});assert.equal(response.ok,true,response.error);
+  assert.equal(response.data.jobs[0].outputFormat,'auto');assert.match(h.requested[0].filename,/\.webm$/);
+});
+
+test('BG-format: incompatible MP4 or invalid format rejects the entire batch without replacing previous jobs',async t=>{
+  const h=await browser(t);
+  const previous=[{url:'https://source.test/finished.mp4',status:'complete',filename:'previous.mp4',outputFormat:'mp4'}];
+  h.state.jobs=previous;
+  h.state.items=[{url:'https://source.test/good.mp4',type:'direct',mime:'video/mp4'},{url:'https://source.test/other.webm',type:'direct',mime:'video/webm'}];h.persist();
+  for(const outputFormat of ['mp4','bogus']) {
+    const response=await h.send({type:'save',urls:h.state.items.map(item=>item.url),outputFormat});
+    assert.equal(response.ok,false);assert.match(response.error,/形式|MP4/);
+    assert.deepEqual(h.store.get('workspace:work').jobs,previous,'failed validation is atomic');
+    assert.equal(h.requested.length,0);
+  }
+});
+
+test('BG-format: typed extensionless MP4 may use MP4, while unknown endpoints cannot be relabeled',async t=>{
+  const h=await browser(t),url='https://source.test/typed-endpoint';
+  const unknownURL='https://source.test/untyped-endpoint';
+  h.state.items=[{url,type:'direct',mime:'video/mp4'},{url:unknownURL,type:'direct'}];h.persist();
+  const response=await h.send({type:'save',urls:[url],outputFormat:'mp4'});assert.equal(response.ok,true,response.error);
+  assert.match(h.requested[0].filename,/\.mp4$/);
+  const canceled=await h.send({type:'cancel'});assert.equal(canceled.ok,true);
+  const denied=await h.send({type:'save',urls:[unknownURL],outputFormat:'mp4'});assert.equal(denied.ok,false);assert.match(denied.error,/確認できない/);
+  assert.equal(h.requested.length,1);
+});
+
+test('BG-format: completed Chrome WebM/QuickTime responses cannot report successful selected MP4 output',async t=>{
+  const h=await browser(t);
+  for(const mime of ['video/webm','video/quicktime']) {
+    h.state.jobs=[{url:'https://source.test/declared.mp4',filename:'declared.mp4',downloadId:7,status:'in_progress',outputFormat:'mp4'}];h.persist();
+    h.downloads.set(7,{id:7,state:'complete',mime,bytesReceived:10,totalBytes:10});
+    const response=await h.send({type:'get'});assert.equal(response.ok,true,response.error);
+    const job=response.data.jobs[0];assert.equal(job.status,'interrupted');assert.equal(job.outputFormat,'mp4');
+    assert.match(job.error,/MP4と異なる形式/);assert.match(job.error,/応答が保存されました/,'the already saved file is honestly acknowledged');
+    assert.equal(job.bytesReceived,10);assert.equal(h.requested.length,0,'status reconciliation does not retry or relabel the file');
+  }
+});
+
+test('BG-format: actual native MP4/M4V complete normally and auto accepts other actual video formats',async t=>{
+  const h=await browser(t);
+  for(const [mime,outputFormat] of [['video/mp4','mp4'],['video/mp4; codecs=avc1','mp4'],['video/x-m4v','mp4'],['video/webm','auto'],['video/quicktime','auto']]) {
+    h.state.jobs=[{url:'https://source.test/clip',filename:outputFormat==='mp4' ? 'clip.mp4' : 'clip.video',downloadId:7,status:'in_progress',outputFormat}];h.persist();
+    h.downloads.set(7,{id:7,state:'complete',mime,bytesReceived:10,totalBytes:10});
+    const response=await h.send({type:'get'});assert.equal(response.ok,true,response.error);
+    assert.equal(response.data.jobs[0].status,'complete',`${mime} is accepted for ${outputFormat}`);
+    assert.equal(response.data.jobs[0].error,undefined);assert.equal(h.requested.length,0);
+  }
+});
