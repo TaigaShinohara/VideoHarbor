@@ -1,6 +1,6 @@
 // Injected as a self-contained function into each authorized source document.
 export function collect(previousURLs = []) {
-  const items = new Map(), frames = new Map(), notices = new Set();
+  const items = new Map(), frames = new Map(), videoElements = new Map(), notices = new Set();
   // Each injection owns exactly one real Chrome frame. Never attribute a child
   // document to its parent InjectionResult (notably for blob reads).
   const key = '__videoHarborDiscovery';
@@ -10,6 +10,9 @@ export function collect(previousURLs = []) {
     document[key] = local;
   }
   local.elements = new Map();
+  // Source identity stays in this isolated document. MediaStream objects and
+  // media URLs are not needed in the recording selector or session snapshot.
+  local.videoSources = new Map();
   const previous = new Set(Array.isArray(previousURLs) ? previousURLs : []);
   let context = {}, configSequence = 0, previewCount = 0;
   const documentURL = document.URL || document.defaultView?.location?.href || document.baseURI;
@@ -40,7 +43,7 @@ export function collect(previousURLs = []) {
   const rank = item => (item.playing ? 100000 : 0)+(item.visible ? 10000 : 0)
     +(item.discovery === 'loaded-history' ? 0 : 1000)+(!previous.has(item.url) ? 100 : 0)+(confidence[item.source] || 0);
   const fingerprint = value => { let n=2166136261; for (let i=0;i<value.length;i++) n=Math.imul(n^value.charCodeAt(i),16777619); return (n>>>0).toString(36); };
-  const LIMIT = 500, NODE_LIMIT = 12000, FRAME_LIMIT = 32, JSON_LIMIT = 524288;
+  const LIMIT = 500, VIDEO_LIMIT = 100, NODE_LIMIT = 12000, FRAME_LIMIT = 32, JSON_LIMIT = 524288;
   const mediaSuffix = /\.(mp4|webm|mov|m4v|ogv|ogg|m3u8|mpd)(?:[?#]|$)/i;
   const videoMIME = /^(?:video\/|application\/(?:vnd\.apple\.mpegurl|x-mpegurl|dash\+xml))/i;
   const confidence = {video:5,'player-config':4,metadata:3,embed:3,'loaded-resource':2,link:1};
@@ -274,6 +277,22 @@ export function collect(previousURLs = []) {
             } catch { /* Cross-origin/tainted videos remain usable without a preview. */ }
           }
           const meta = {width:el.videoWidth || 0,height:el.videoHeight || 0,source:'video',mediaHint:true,mime:el.getAttribute('type') || ''};
+          const video = {...context,source:'video',width:meta.width,height:meta.height,
+            readyState:Number.isInteger(el.readyState) ? el.readyState : 0,
+            paused:typeof el.paused === 'boolean' ? el.paused : true,ended:Boolean(el.ended)};
+          if (videoElements.size >= VIDEO_LIMIT) {
+            notices.add('録画する動画は100件までです。再生中・表示中の動画を優先しました。');
+            const score = item => (item.playing ? 100 : 0)+(item.visible ? 10 : 0);
+            let worst;
+            for (const candidate of videoElements.values()) if (!worst || score(candidate)<score(worst)) worst=candidate;
+            if (score(video)>score(worst)) {
+              videoElements.delete(worst.elementToken);local.videoSources.delete(worst.elementToken);
+            }
+          }
+          if (videoElements.size < VIDEO_LIMIT) {
+            videoElements.set(video.elementToken,video);
+            local.videoSources.set(video.elementToken,{currentSrc:el.currentSrc,srcObject:el.srcObject});
+          }
           add(el.currentSrc,meta,base);
           for (const key of ['src','data-src','data-video-src','data-source','data-hls','data-dash']) add(el.getAttribute(key),{...meta,mime:key === 'data-hls' ? 'application/vnd.apple.mpegurl' : key === 'data-dash' ? 'application/dash+xml' : meta.mime},base);
           for (const src of el.querySelectorAll('source')) {
@@ -325,7 +344,7 @@ export function collect(previousURLs = []) {
     } catch { /* A detached frame may lose its performance context. */ }
   };
   walkDocument(document);
-  return {frameToken:local.token,documentURL,items:[...items.values()],frames:[...frames.values()],notices:[...notices]};
+  return {frameToken:local.token,documentURL,items:[...items.values()],videoElements:[...videoElements.values()],frames:[...frames.values()],notices:[...notices]};
 }
 
 

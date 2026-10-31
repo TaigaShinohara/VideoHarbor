@@ -4,6 +4,7 @@ import { MediaSaver, originPattern } from './media-save.js';
 import { outputOptions, validateOutputFormat } from './output-format.js';
 import { renderVideoGroups } from './workspace-videos.js';
 import { RecordingResultView } from './workspace-result.js';
+import { prepareVideoCapture } from './video-capture.js';
 const KIND = 'videos';
 const $ = id => document.getElementById(id);
 const sessionId = new URL(location.href).searchParams.get('id');
@@ -14,6 +15,29 @@ let recordingResultView = null;
 let initialRecorderMessage = '', previousRecordingPhase = '';
 const handledCompletions = new Set();
 const formatSelections=new Map();
+const videoKey = ref => JSON.stringify([ref.documentId || ref.frameId || 0,ref.frameToken,ref.elementToken,ref.documentURL]);
+const selectedVideo = () => (state?.videoElements || []).find(ref => videoKey(ref) === $('record-video').value);
+function updateVideoChoices() {
+  const select=$('record-video'), current=select.value;
+  const refs=state.videoElements || [], options=[['','動画を選んでください'],...refs.map((ref,index)=>[videoKey(ref),`${ref.title || `ページ上の動画 ${index+1}`}${ref.playing ? ' · 再生中' : ''}`])];
+  if(JSON.stringify([...select.options].map(option=>[option.value,option.textContent]))!==JSON.stringify(options)) {
+    select.replaceChildren(...options.map(([value,text])=>{const option=element('option','',text);option.value=value;return option;}));
+    select.value=refs.some(ref=>videoKey(ref)===current) ? current : '';
+  }
+  if(recorder)updateRecording(recorder.snapshot());
+}
+function selectVideoForRecording(reference) {
+  if(recorder?.busy || isBusy())return;
+  updateVideoChoices();
+  if(reference) {
+    const key=videoKey(reference);
+    if(!(state.videoElements || []).some(ref=>videoKey(ref)===key)) {error(new Error('動画が見つかりません。元ページを確認して再スキャンしてください。'));return;}
+    $('record-video').value=key;
+    document.querySelector('[name="record-mode"][value="video"]').checked=true;
+  }
+  showView('record');
+  updateRecording(recorder.snapshot());
+}
 const mediaSaver=new MediaSaver({onUpdate:updateMediaUI,readBlob:(url,offset,token)=>send('blob-read',{url,offset,token})});
 window.addEventListener('pagehide',()=>mediaSaver.dispose());
 async function send(type, extra = {}) {
@@ -72,7 +96,7 @@ function updateSummary() {
     $('select-visible').disabled=busy || !visible.length;
     $('clear').disabled=busy || !selected.size;
     for(const el of document.querySelectorAll('.image-select')) el.disabled=busy;
-  } else for(const el of document.querySelectorAll('.direct-save,.media-save,.frame-permission,.output-format')) el.disabled=busy;
+  } else for(const el of document.querySelectorAll('.direct-save,.media-save,.frame-permission,.output-format,.record-video-button')) el.disabled=busy;
   $('record-tab').disabled=mediaSaver.busy;
 }
 function updateMediaUI() {
@@ -200,8 +224,11 @@ function renderVideos() {
         void mediaSaver.start(item,state.title,outputFormat).catch(error);
       } catch(e){error(e);}
     },
-    onRecord:()=>showView('record'),
-    onLocate:(item,occurrence)=>send('locate-source',{url:item.url,occurrenceId:occurrence.id}).catch(error),
+    onRecord:selectVideoForRecording,
+    onLocate:(item,occurrence)=>{
+      if((state.videoElements || []).some(ref=>videoKey(ref)===videoKey(occurrence)))return send('locate-video',{reference:occurrence}).catch(error);
+      if(item)return send('locate-source',{url:item.url,occurrenceId:occurrence.id}).catch(error);
+    },
     onLocateFrame:frame=>send('locate-frame',{elementToken:frame.elementToken,frameToken:frame.frameToken}).catch(error),
     onFramePermission:(origin,button)=>{
       let permission,restorePermissionFocus=false;
@@ -235,6 +262,7 @@ async function scan() {
 function render() {
   $('notices').textContent=state.notices.join(' ');$('notices').hidden=!state.notices.length;
   KIND === 'images' ? renderImages() : renderVideos();
+  if(KIND==='videos')updateVideoChoices();
 }
 async function saveURLs(urls,outputFormat='auto') {
   if(isBusy()) return;
@@ -246,7 +274,7 @@ async function jobAction(type) {
   try{applyState(await send(type));}catch(e){error(e);}finally{requestPending=false;updateSummary();}
 }
 function setupRecording() {
-  recorder = new RecorderController({source:state,onUpdate:updateRecording,acquire:async mode=>{try{return await send('capture',{mode});}catch(e){e.name='CaptureControlError';throw e;}},release:()=>send('release')});
+  recorder = new RecorderController({source:state,onUpdate:updateRecording,acquire:async mode=>{try{return await send('capture',{mode});}catch(e){e.name='CaptureControlError';throw e;}},release:()=>send('release'),prepareVideo:async options=>{try{return await prepareVideoCapture({send,...options});}catch(e){e.name='CaptureControlError';throw e;}}});
   recordingResultView=new RecordingResultView({controller:recorder,showDownload:downloadId=>send('show-download',{downloadId})});
   initialRecorderMessage=recorder.snapshot().message;
   $('download-tab').addEventListener('click',()=>showView('download'));$('record-tab').addEventListener('click',()=>showView('record'));
@@ -262,14 +290,17 @@ function setupRecording() {
   $('empty-scan').addEventListener('click',scan);
   $('record-output').addEventListener('change',()=>updateRecording(recorder.snapshot()));
   for(const input of document.querySelectorAll('[name="record-mode"]'))input.addEventListener('change',()=>updateRecording(recorder.snapshot()));
+  $('record-video').addEventListener('change',()=>updateRecording(recorder.snapshot()));
+  $('locate-record-video').addEventListener('click',()=>{const reference=selectedVideo();if(reference)send('locate-video',{reference}).catch(error);});
+  window.addEventListener('pagehide',()=>{void recorder.stop().catch(()=>{});});
   $('choose-file').addEventListener('click',()=>recorder.chooseFile().catch(error));
   $('start-record').addEventListener('click',()=> {
     if(mediaSaver.busy)return;
     clearError();
     // start() must reach getDisplayMedia before yielding user activation.
-    recorder.start(document.querySelector('[name="record-mode"]:checked').value,$('record-audio').checked,$('record-output').value).catch(error);
+    recorder.start(document.querySelector('[name="record-mode"]:checked').value,$('record-audio').checked,$('record-output').value,selectedVideo()).catch(error);
   });
-  $('pause-record').addEventListener('click',()=>{try{recorder.snapshot().phase==='paused' ? recorder.resume() : recorder.pause();}catch(e){error(e);}});
+  $('pause-record').addEventListener('click',()=>{Promise.resolve(recorder.snapshot().phase==='paused' ? recorder.resume() : recorder.pause()).catch(error);});
   $('stop-record').addEventListener('click',()=>recorder.stop().catch(error));
   $('continue-without-audio').addEventListener('click',()=>recorder.continueWithoutAudio());
   for(const id of ['reselect-capture','cancel-record-start']) $(id).addEventListener('click',async()=>{
@@ -291,7 +322,14 @@ function updateRecording(s) {
   const busy=['starting','awaiting-audio-decision','recording','paused','finalizing','saving'].includes(s.phase);
   const focused=document.activeElement, phaseChanged=previousRecordingPhase!==s.phase;
   const mode=document.querySelector('[name="record-mode"]:checked').value, disk=$('record-output').value==='file';
-  const targetHint=mode==='tab' ? '元のタブを録画します。' : '開始後に共有する対象を選びます。別のタブも選べます。';
+  const reference=selectedVideo();
+  const targetHint=mode==='video' ? (reference ? '選んだ動画の映像と音声だけを録画します。結果は停止後に再生して確認できます。' : '元ページで動画を再生して再スキャンし、録画する動画を選んでください。') : mode==='tab' ? '元のタブ全体を録画します。タブ内の他の音も含まれます。' : '開始後に共有する対象を選びます。別のタブも選べます。';
+  $('video-choice').hidden=mode!=='video';
+  $('locate-record-video').disabled=busy || !reference;
+  const thumbnail=$('record-video-image');
+  const preview=reference?.previewDataURL || '';
+  thumbnail.hidden=!/^data:image\/jpeg;base64,[a-zA-Z0-9+/=]+$/.test(preview) || preview.length>32768;
+  if(!thumbnail.hidden)thumbnail.src=preview;else thumbnail.removeAttribute('src');
   document.body.classList.toggle('recording-active',busy || (s.resultReady && !s.resultSaved));
   document.body.classList.toggle('recording-result',s.resultReady && !s.resultSaved);
   document.body.classList.toggle('has-recording-result',s.resultReady);
@@ -306,7 +344,7 @@ function updateRecording(s) {
   $('preview-stage').dataset.phase=s.phase;
   $('record-state').textContent=phases[s.phase] || s.phase;$('record-state').dataset.state=s.phase;
   $('download-tab').disabled=busy;
-  $('record-options').disabled=busy;$('start-record').disabled=busy || (s.resultReady && !s.resultSaved) || (disk && !s.diskChosen);
+  $('record-options').disabled=busy;$('start-record').disabled=busy || (s.resultReady && !s.resultSaved) || (disk && !s.diskChosen) || (mode==='video' && !reference);
   $('choose-file').disabled=busy;
   const diskOption=$('record-output').querySelector('option[value="file"]');diskOption.disabled=!s.diskAvailable;
   $('file-choice').hidden=!disk;
@@ -314,6 +352,7 @@ function updateRecording(s) {
   $('record-limit').textContent=disk ? '最大30分 · ファイルへ順次保存' : '最大30分 · 約256 MiBで自動停止';
   $('target-hint').textContent=targetHint;
   $('chosen-file').textContent=s.diskChosen ? `選択済み: ${s.chosenFileName || s.fileName}` : '未選択';
+  $('pause-record').disabled=Boolean(s.controlPending);
   $('pause-record').hidden=!['recording','paused'].includes(s.phase);$('pause-record').textContent=s.phase==='paused' ? '再開' : '一時停止';
   $('stop-record').hidden=!['recording','paused'].includes(s.phase);
   $('audio-decision').hidden=!awaiting;
@@ -323,14 +362,15 @@ function updateRecording(s) {
   const showCaptureDetails=Boolean(s.method) && !['starting','awaiting-audio-decision'].includes(s.phase);
   $('record-metrics').hidden=!showCaptureDetails;
   $('record-description').hidden=!showCaptureDetails;
-  $('record-description').textContent=s.method ? `${s.method==='tab' ? '元のタブ' : 'Chromeで選んだ共有対象'} · ${s.target || state.title} · WebM · ${s.audio ? '音声あり' : '音声なし'}${busy ? ' · この作業タブを閉じないでください' : ''}` : '';
+  $('record-description').textContent=s.method ? `${s.method==='video' ? '選んだ動画のみ' : s.method==='tab' ? '元のタブ全体' : 'Chromeで選んだ共有対象'} · ${s.target || state.title} · WebM · ${s.audio ? '音声あり' : '音声なし'}${busy ? ' · この作業タブを閉じないでください' : ''}` : '';
   if($('record-message').textContent!==s.message) $('record-message').textContent=s.message || '';
   $('record-message').hidden=!s.message || s.message===initialRecorderMessage;
   if(recorder && $('preview').srcObject!==recorder.stream) $('preview').srcObject=recorder.stream || null;
   const live=['recording','paused','awaiting-audio-decision'].includes(s.phase) && Boolean(recorder?.stream);
-  $('preview').hidden=!live;$('preview-placeholder').hidden=live;$('live-badge').hidden=!live;
+  $('preview').hidden=!live;$('preview-placeholder').hidden=live;$('live-badge').hidden=!(live || (s.method==='video' && ['recording','paused'].includes(s.phase)));
   $('live-label').textContent=awaiting ? '共有中 · 録画未開始' : s.phase==='paused' ? '一時停止中' : '録画中';
-  const stage={idle:['screen','録画の準備',targetHint],starting:['refresh','共有する対象を確認','Chromeの案内に従ってください。'],finalizing:['refresh','保存を確定中','この作業タブを閉じないでください。'],saving:['refresh','ファイルを保存中','保存先を確認してください。'],ready:['download','録画できました','ファイルへ保存して完了です。'],saved:['check','保存しました','直前の録画 · WebM'],error:['info','録画・保存を確認','下のメッセージを確認してください。']}[s.phase];
+  const videoStage=s.method==='video' && ['starting','awaiting-audio-decision','recording','paused'].includes(s.phase) ? ['play',s.phase==='starting' ? '選んだ動画を確認中' : awaiting ? '録画はまだ始まっていません' : s.phase==='paused' ? '動画の録画を一時停止中' : '選んだ動画を録画中',`${s.target || reference?.title || '選んだ動画'} · 結果は停止後に確認できます。`] : null;
+  const stage=videoStage || {idle:['screen','録画の準備',targetHint],starting:['refresh','共有する対象を確認','Chromeの案内に従ってください。'],finalizing:['refresh','保存を確定中','この作業タブを閉じないでください。'],saving:['refresh','ファイルを保存中','保存先を確認してください。'],ready:['download','録画できました','ファイルへ保存して完了です。'],saved:['check','保存しました','直前の録画 · WebM'],error:['info','録画・保存を確認','下のメッセージを確認してください。']}[s.phase];
   if(stage) {
     $('stage-icon').querySelector('use').setAttribute('href',`icons.svg#${stage[0]}`);
     $('stage-title').textContent=stage[1];$('stage-hint').textContent=stage[2];

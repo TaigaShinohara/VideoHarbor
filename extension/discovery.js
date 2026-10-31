@@ -1,7 +1,7 @@
 import { isImageResource, mediaKind, mergeItems } from './utils.js';
 
 export const DISCOVERY_VERSION = 2;
-const LIMIT = 500, PREVIOUS_LIMIT = 100;
+const LIMIT = 500, VIDEO_LIMIT = 100, PREVIOUS_LIMIT = 100;
 const isVideoCandidate = item => !isImageResource(item.url,item.mime);
 const priority = (item, previousURLs) => (item.playing ? 100000 : 0)+(item.visible ? 10000 : 0)
   +(item.discovery === 'loaded-history' ? 0 : 1000)+(!previousURLs.has(item.url) ? 100 : 0)
@@ -16,14 +16,14 @@ const kindFor = item => {
 export function migrateDiscovery(state) {
   if (state.scan?.version === DISCOVERY_VERSION) {
     const items = (state.items || []).filter(isVideoCandidate), previousItems = (state.previousItems || []).filter(isVideoCandidate);
-    if (items.length === (state.items || []).length && previousItems.length === (state.previousItems || []).length) return state;
-    return {...state,items,previousItems,scan:{...state.scan,currentCount:items.length,previousCount:previousItems.length}};
+    if (items.length === (state.items || []).length && previousItems.length === (state.previousItems || []).length && Array.isArray(state.videoElements)) return state;
+    return {...state,items,previousItems,videoElements:Array.isArray(state.videoElements) ? state.videoElements : [],scan:{...state.scan,currentCount:items.length,previousCount:previousItems.length}};
   }
   const previousItems = (state.items || []).filter(isVideoCandidate).slice(-PREVIOUS_LIMIT).map(item => {
     const {frameId,documentId,occurrences,videoRef,configRef,frameToken,...safe} = item;
     return {...safe,discovery:'previous',legacy:true};
   });
-  return {...state,items:[],previousItems,frames:[],scan:{version:DISCOVERY_VERSION,sequence:0,at:null,currentCount:0,previousCount:previousItems.length,omitted:0},
+  return {...state,items:[],previousItems,videoElements:[],frames:[],scan:{version:DISCOVERY_VERSION,sequence:0,at:null,currentCount:0,previousCount:previousItems.length,omitted:0},
   notices:[...new Set([...(state.notices || []),...(state.items?.length ? ['以前の候補を前回の結果へ移しました。再スキャンで現在のページを確認してください。'] : [])])]};
 }
 
@@ -31,18 +31,35 @@ export function migrateDiscovery(state) {
 // tab again before committing all fields together. A failed scan keeps old state.
 export function discoverySnapshot(state, results, now = Date.now()) {
   const previousURLs = new Set((state.items || []).map(item => item.url));
-  const incoming = [], frames = [], notices = new Set();
+  const incoming = [], frames = [], videoElements = new Map(), notices = new Set();
   let previewBudget = 262144;
+  const boundPreview = source => {
+    if (typeof source.previewDataURL !== 'string') return;
+    if (/^data:image\/jpeg;base64,[a-z0-9+/=]+$/i.test(source.previewDataURL) && source.previewDataURL.length <= 32768 && source.previewDataURL.length <= previewBudget) previewBudget-=source.previewDataURL.length;
+    else delete source.previewDataURL;
+  };
+  const videoPriority = video => (video.playing ? 100 : 0)+(video.visible ? 10 : 0);
   for (const {result,frameId = 0,documentId} of results) {
     if (!Array.isArray(result?.items)) continue;
+    for (const entry of result.videoElements || []) {
+      if (entry.elementTag !== 'VIDEO' || !entry.elementToken || entry.videoRef !== entry.elementToken || !result.frameToken || !result.documentURL) continue;
+      const video={...entry,source:'video',origin:'dom',frameToken:result.frameToken,documentURL:result.documentURL,frameId,...(documentId ? {documentId} : {})};
+      boundPreview(video);
+      const key=`${documentId || frameId}:${video.elementToken}`;
+      if (!videoElements.has(key) && videoElements.size>=VIDEO_LIMIT) {
+        notices.add('録画する動画は100件までです。再生中・表示中の動画を優先しました。');
+        let worst;
+        for (const candidate of videoElements) if (!worst || videoPriority(candidate[1])<videoPriority(worst[1])) worst=candidate;
+        if (videoPriority(video)<=videoPriority(worst[1])) continue;
+        videoElements.delete(worst[0]);
+      }
+      videoElements.set(key,video);
+    }
     for (const item of result.items) {
       if (!isVideoCandidate(item)) continue;
       const occurrences = (item.occurrences?.length ? item.occurrences : [{source:item.source,origin:item.source === 'loaded-resource' ? 'performance' : 'dom'}]).map((entry,index) => {
         const occurrence = {...entry,frameToken:result.frameToken,documentURL:result.documentURL || entry.documentURL,frameId,...(documentId ? {documentId} : {}),id:entry.id || `${documentId || frameId}:${index}:${item.url}`};
-        if (typeof occurrence.previewDataURL === 'string') {
-          if (/^data:image\/jpeg;base64,[a-z0-9+/=]+$/i.test(occurrence.previewDataURL) && occurrence.previewDataURL.length <= 32768 && occurrence.previewDataURL.length <= previewBudget) previewBudget-=occurrence.previewDataURL.length;
-          else delete occurrence.previewDataURL;
-        }
+        boundPreview(occurrence);
         return occurrence;
       });
       // Only a document's own output may receive its InjectionResult identity.
@@ -74,6 +91,6 @@ export function discoverySnapshot(state, results, now = Date.now()) {
   const currentURLs = new Set(items.map(item => item.url));
   const previousItems = [...new Map([...(state.previousItems || []),...(state.items || [])].map(item => [item.url,item])).values()]
     .filter(item => isVideoCandidate(item) && !currentURLs.has(item.url)).slice(-PREVIOUS_LIMIT).map(item => ({...item,discovery:'previous'}));
-  return {items,previousItems,frames:frames.slice(0,100),notices:[...notices],scanned:true,
+  return {items,previousItems,videoElements:[...videoElements.values()].sort((a,b)=>videoPriority(b)-videoPriority(a)),frames:frames.slice(0,100),notices:[...notices],scanned:true,
     scan:{version:DISCOVERY_VERSION,sequence:(state.scan?.sequence || 0)+1,at:now,currentCount:items.length,previousCount:previousItems.length,omitted}};
 }

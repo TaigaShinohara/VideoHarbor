@@ -1,0 +1,217 @@
+// Local, isolated profiles only. This exercises real element capture, messaging,
+// MediaRecorder, result playback and download; native prompts and human listening
+// remain separate manual QA.
+import assert from 'node:assert/strict';
+import {mkdtemp,cp,readFile,writeFile,mkdir,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {createServer} from 'node:http';
+import {spawnSync} from 'node:child_process';
+import {launchTestExtension} from './chrome-runtime.mjs';
+const {chromium}=await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const repo=fileURLToPath(new URL('../',import.meta.url));
+const scratch=await mkdtemp(join(tmpdir(),'videoharbor-video-only-qa-'));
+const extension=join(scratch,'extension');
+let context,server,crossServer;
+const pageErrors=[],results=[];
+const watchdog=setTimeout(()=>{console.error('Video capture QA deadline exceeded');void context?.close();},180000);
+const command=(tool,args)=>{
+  const run=spawnSync(tool,args,{maxBuffer:32*1024*1024});
+  assert.equal(run.status,0,`${tool}: ${run.error?.message || run.stderr?.toString()}`);
+  return run.stdout;
+};
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+async function makeVideo(name,color,frequency) {
+  command('ffmpeg',['-v','error','-nostdin','-y','-f','lavfi','-i',`color=${color}:size=320x180:rate=12`,
+    ...(frequency ? ['-f','lavfi','-i',`sine=frequency=${frequency}:sample_rate=48000`] : []),
+    '-t','12','-c:v','libvpx','-deadline','realtime','-cpu-used','8','-g','12','-pix_fmt','yuv420p','-threads','1',
+    ...(frequency ? ['-c:a','libopus'] : ['-an']),join(scratch,name+'.webm')]);
+  return readFile(join(scratch,name+'.webm'));
+}
+async function analyze(path,{audio=true,color='red',frequency=440}={}) {
+  const probe=JSON.parse(command('ffprobe',['-v','error','-show_streams','-show_packets','-show_entries','stream=index,codec_type,width,height:packet=stream_index,pts_time,duration_time','-of','json',path]));
+  const video=probe.streams.find(stream=>stream.codec_type==='video');
+  assert.equal(video?.width,320);assert.equal(video?.height,180,'recording uses source pixels, not the page layout');
+  assert.equal(probe.streams.some(stream=>stream.codec_type==='audio'),audio,'actual saved audio presence');
+  command('ffmpeg',['-v','error','-nostdin','-xerror','-err_detect','explode','-i',path,'-f','null','-']);
+  const frame=command('ffmpeg',['-v','error','-nostdin','-i',path,'-frames:v','1','-pix_fmt','rgb24','-f','rawvideo','-']);
+  const average=[0,0,0];for(let index=0;index<frame.length;index++)average[index%3]+=frame[index]/(frame.length/3);
+  if(color==='red'||color==='blue') {
+    let expected=0;for(let index=0;index<frame.length;index+=3)if(color==='red' ? frame[index]>200&&frame[index+1]<70&&frame[index+2]<70 : frame[index+2]>200&&frame[index]<70&&frame[index+1]<70)expected++;
+    assert.ok(expected/(frame.length/3)>0.999,`more than 99.9% of pixels belong to the target color: ${average}`);
+  }
+  let audioRatio;
+  if(audio&&frequency) {
+    const pcm=command('ffmpeg',['-v','error','-nostdin','-i',path,'-map','0:a','-ac','1','-ar','48000','-f','f32le','-']);
+    const samples=new Float32Array(pcm.buffer,pcm.byteOffset,Math.floor(pcm.byteLength/4));
+    const power=f=>{let s=0,c=0;for(let index=0;index<samples.length;index++){const angle=2*Math.PI*f*index/48000;s+=samples[index]*Math.sin(angle);c+=samples[index]*Math.cos(angle);}return s*s+c*c;};
+    audioRatio=power(frequency)/Math.max(power(frequency===440?1200:440),1e-10);
+    assert.ok(audioRatio>100,`target sound dominates the unrelated video by >20dB: ${audioRatio}`);
+  }
+  const times=probe.packets.filter(packet=>packet.stream_index===video.index).map(packet=>Number(packet.pts_time));
+  assert.ok(Math.max(...times)-Math.min(...times)>0.25,'the output has multiple real video frames');
+  return {bytes:(await readFile(path)).length,average,audioRatio,videoSeconds:Math.max(...times)-Math.min(...times)};
+}
+async function screenshot(manager,name) {
+  if(!process.env.QA_SCREENSHOT_DIR)return;
+  await mkdir(process.env.QA_SCREENSHOT_DIR,{recursive:true});
+  for(const width of [1280,360,320]) {
+    await manager.setViewportSize({width,height:width===1280?900:800});
+    await manager.evaluate(()=>scrollTo(0,0));
+    assert.ok(await manager.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),`no horizontal overflow at ${width}px`);
+    await manager.screenshot({path:join(process.env.QA_SCREENSHOT_DIR,`${name}-${width}.png`),fullPage:name==='prepare',animations:'disabled'});
+  }
+  await manager.setViewportSize({width:1280,height:900});
+}
+async function getSavedRecording(manager,name) {
+  const before=await manager.evaluate(async()=>(await chrome.downloads.search({})).map(item=>item.id));
+  await manager.locator('#save-record').click();
+  await manager.waitForFunction(()=>document.querySelector('#record-state').dataset.state==='saved',{},{timeout:15000});
+  const download=await manager.evaluate(async before=>(await chrome.downloads.search({})).find(item=>!before.includes(item.id)),before);
+  assert.equal(download?.state,'complete');assert.equal(download.exists,true);
+  assert.ok(download.filename.startsWith(scratch+'/'),'actual download stays inside isolated temporary output');
+  const path=join(scratch,name+'.webm');await cp(download.filename,path);return path;
+}
+async function discard(manager) {
+  if(await manager.locator('#discard-record').isVisible())await manager.locator('#discard-record').click();
+}
+async function scan(manager) {
+  await manager.locator('#download-tab').click();await manager.locator('#scan').click();
+  await manager.waitForFunction(()=>!document.querySelector('#scan').disabled);
+}
+async function select(manager,title) {
+  await manager.locator('#download-tab').click();
+  const group=manager.locator('.video-group').filter({has:manager.getByRole('heading',{name:title,exact:true})});
+  assert.equal(await group.count(),1,`one actual video group for ${title}: ${JSON.stringify(await manager.locator('.video-title').allTextContents())}`);
+  await group.locator('.record-video-button').click();
+  assert.equal(await manager.locator('[name="record-mode"]:checked').inputValue(),'video');
+  assert.match(await manager.locator('#record-video option:checked').textContent(),new RegExp(title));
+}
+async function start(manager) {
+  await manager.locator('#start-record').click();
+  await manager.waitForFunction(()=>['recording','awaiting-audio-decision','error'].includes(document.querySelector('#record-state').dataset.state),{},{timeout:15000});
+}
+async function stopped(manager) {
+  await manager.waitForFunction(()=>['ready','saved','error'].includes(document.querySelector('#record-state').dataset.state),{},{timeout:15000});
+}
+async function normalRecording(manager,title,name,{audio=true,color='red',frequency=440,duration=1000}={}) {
+  console.log('video-only QA: '+name);
+  await select(manager,title);await manager.locator('#record-audio').setChecked(audio);await start(manager);
+  assert.equal(await manager.locator('#record-state').getAttribute('data-state'),'recording',(await manager.locator('#record-message').textContent())+' '+JSON.stringify(await manager.evaluate(()=>({error:globalThis.__qaStartError,requests:globalThis.__qaVideoRequests}))));
+  await sleep(duration);await manager.locator('#stop-record').click();await stopped(manager);
+  assert.equal(await manager.locator('#record-state').getAttribute('data-state'),'ready',await manager.locator('#record-message').textContent());
+  const path=await getSavedRecording(manager,name),data=await analyze(path,{audio,color,frequency});
+  results.push({test:name,...data});await discard(manager);return path;
+}
+try {
+  const target=await makeVideo('target','red',440),other=await makeVideo('other','blue',1200),silent=await makeVideo('silent','green',0),mse=await makeVideo('mse','red',0);
+  const media=(req,res)=>{res.setHeader('content-type','video/webm');res.end(req.url.includes('other')?other:req.url.includes('silent')?silent:req.url.includes('mse')?mse:target);};
+  let origin,crossOrigin;
+  crossServer=createServer((req,res)=>{
+    if(req.url==='/frame'){res.setHeader('content-type','text/html; charset=utf-8');return res.end('<!doctype html><video title="別origin埋め込み" loop src="/target.webm"></video>');}
+    if(req.url.startsWith('/allow.webm'))res.setHeader('access-control-allow-origin','*');
+    media(req,res);
+  });
+  await new Promise(resolve=>crossServer.listen(0,'127.0.0.1',resolve));crossOrigin=`http://127.0.0.1:${crossServer.address().port}`;
+  server=createServer((req,res)=>{
+    if(req.url.endsWith('.webm'))return media(req,res);
+    if(req.url==='/frame'){res.setHeader('content-type','text/html; charset=utf-8');return res.end('<!doctype html><video title="同origin埋め込み" loop src="/target.webm"></video>');}
+    res.setHeader('content-type','text/html; charset=utf-8');res.end(`<!doctype html><html lang="ja"><meta charset="utf-8"><title>Video-only synthetic fixture</title><body style="background:lime"><h1>PAGE TEXT MUST NEVER APPEAR</h1><div style="position:absolute;top:60px;left:5px;background:yellow;z-index:10">OVERLAY MUST NEVER APPEAR</div><video id="target" title="赤い対象動画" loop controls width="150" height="80" src="/target.webm"></video><video id="other" title="青い別動画" loop controls src="/other.webm"></video><video id="silent" title="音声なし動画" loop src="/silent.webm"></video><video id="allowed" title="CORS許可動画" loop crossorigin="anonymous" src="${crossOrigin}/allow.webm"></video><video id="denied" title="CORS不許可動画" loop src="${crossOrigin}/deny.webm"></video><video id="object" title="srcObject動画"></video><video id="mse" title="MSE動画"></video><iframe id="same-frame" title="同origin埋め込み" src="/frame"></iframe><iframe id="cross-frame" title="別origin埋め込み" src="${crossOrigin}/frame"></iframe></body></html>`);
+  });
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));origin=`http://127.0.0.1:${server.address().port}`;
+  await cp(join(repo,'extension'),extension,{recursive:true});
+  const background=join(extension,'background.js');await writeFile(background,(await readFile(background,'utf8'))+'\nglobalThis.__openWorkspace=openWorkspace;\n');
+  // Diagnostics in the temporary copy only; no capture, ordering or writer behavior is replaced.
+  const recorderPath=join(extension,'recorder.js');await writeFile(recorderPath,(await readFile(recorderPath,'utf8')).replace('} catch (error) {\n      if (op.pendingSession)', '} catch (error) {\n      globalThis.__qaStartError={name:error.name,message:error.message,stack:error.stack};\n      if (op.pendingSession)'));
+  const adapterPath=join(extension,'video-capture.js');await writeFile(adapterPath,(await readFile(adapterPath,'utf8')).replace('if (!response || response.error)', '(globalThis.__qaVideoRequests ||= []).push({command,state:response?.state,reason:response?.reason,failure:response?.failure,error:response?.error});\n      if (!response || response.error)'));
+  const manifest=JSON.parse(await readFile(join(extension,'manifest.json'),'utf8'));manifest.host_permissions=['http://127.0.0.1/*'];await writeFile(join(extension,'manifest.json'),JSON.stringify(manifest));
+  const downloadFolder=join(scratch,'downloads');await mkdir(downloadFolder);
+  const defaultProfile=join(scratch,'profile','Default');await mkdir(defaultProfile,{recursive:true});
+  await writeFile(join(defaultProfile,'Preferences'),JSON.stringify({download:{default_directory:downloadFolder,prompt_for_download:false,directory_upgrade:true}}));
+  console.log('video-only QA: generated local fixtures; starting isolated Chrome');
+  const runtime=await launchTestExtension(chromium,join(scratch,'profile'),extension,{acceptDownloads:false,viewport:{width:1280,height:900},ignoreDefaultArgs:['--disable-extensions'],args:['--autoplay-policy=no-user-gesture-required','--no-first-run']});
+  context=runtime.context;const {worker}=runtime;
+  const page=await context.newPage();page.on('pageerror',error=>pageErrors.push(error.message));await page.goto(origin);console.log('video-only QA: preparing source playback');
+  await page.evaluate(async()=>{
+    for(const video of document.querySelectorAll('video:not(#object):not(#mse)'))await Promise.race([video.play(),new Promise((_,reject)=>setTimeout(()=>reject(new Error('Playback timeout: '+video.id)),10000))]);
+    const canvas=document.createElement('canvas');canvas.width=320;canvas.height=180;const drawing=canvas.getContext('2d');drawing.fillStyle='red';drawing.fillRect(0,0,320,180);
+    const stream=canvas.captureStream(12),audio=new AudioContext(),oscillator=audio.createOscillator(),destination=audio.createMediaStreamDestination();
+    oscillator.frequency.value=440;oscillator.connect(destination);oscillator.start();await audio.resume();stream.addTrack(destination.stream.getAudioTracks()[0]);
+    window.originalSyntheticStream=stream;window.originalSyntheticAudio=audio;window.syntheticTimer=setInterval(()=>{drawing.fillStyle='red';drawing.fillRect(0,0,320,180);},60);
+    document.querySelector('#object').srcObject=stream;await document.querySelector('#object').play();
+    const source=new MediaSource();window.syntheticMSE=source;document.querySelector('#mse').preload='auto';document.querySelector('#mse').src=URL.createObjectURL(source);document.querySelector('#mse').load();
+    await new Promise((resolve,reject)=>{setTimeout(()=>reject(new Error('MSE preparation timeout '+JSON.stringify({source:source.readyState,media:document.querySelector('#mse').readyState,error:document.querySelector('#mse').error?.message}))),10000);source.addEventListener('sourceopen',async()=>{try{const buffer=source.addSourceBuffer('video/webm;codecs="vp8"');buffer.addEventListener('updateend',()=>{source.endOfStream();resolve();},{once:true});buffer.appendBuffer(await(await fetch('/mse.webm')).arrayBuffer());}catch(error){reject(error);}},{once:true});});
+    document.querySelector('#mse').loop=true;await document.querySelector('#mse').play();
+  });
+  console.log('video-only QA: source playback ready');
+  for(const frame of page.frames().filter(frame=>frame!==page.mainFrame()))await frame.evaluate(async()=>{await document.querySelector('video').play();});
+  const tab=await worker.evaluate(async url=>(await chrome.tabs.query({})).find(tab=>tab.url===url+'/'),origin);
+  const [manager]=await Promise.all([context.waitForEvent('page'),worker.evaluate(tab=>globalThis.__openWorkspace(tab),tab)]);
+  manager.on('dialog',dialog=>dialog.accept());manager.on('pageerror',error=>pageErrors.push(error.message));await manager.waitForFunction(()=>document.querySelector('#count').textContent&&!document.querySelector('#scan').disabled);
+  const cdp=await context.newCDPSession(manager);await cdp.send('Browser.setDownloadBehavior',{behavior:'allow',downloadPath:downloadFolder,eventsEnabled:true});
+  console.log('video-only QA: workspace and discovery ready');
+  assert.equal(await manager.locator('.record-video-button').count(),9,'real VIDEO elements include URL-less stream and both frames');
+
+  console.log('video-only QA: record target with background/pause/seek');
+  await select(manager,'赤い対象動画');await screenshot(manager,'prepare');await start(manager);
+  assert.equal(await manager.locator('#record-state').getAttribute('data-state'),'recording',(await manager.locator('#record-message').textContent())+' '+JSON.stringify(await manager.evaluate(()=>({error:globalThis.__qaStartError,requests:globalThis.__qaVideoRequests}))));
+  await manager.bringToFront();await sleep(1100);await screenshot(manager,'recording');
+  await manager.locator('#pause-record').click();await manager.waitForFunction(()=>document.querySelector('#record-state').dataset.state==='paused');
+  await sleep(200);await manager.locator('#pause-record').click();await manager.waitForFunction(()=>document.querySelector('#record-state').dataset.state==='recording');
+  await page.evaluate(async()=>{const target=document.querySelector('#target');target.pause();await new Promise(resolve=>setTimeout(resolve,200));target.currentTime=3;await target.play();target.style.width='75px';scrollTo(0,document.body.scrollHeight);});
+  await sleep(1100);assert.equal(await manager.locator('#record-state').getAttribute('data-state'),'recording','source pause, seek, scroll and resizing do not turn into a capture failure');
+  await manager.locator('#stop-record').click();await stopped(manager);await screenshot(manager,'result');
+  assert.equal(await manager.locator('#record-state').getAttribute('data-state'),'ready',await manager.locator('#record-message').textContent());
+  await manager.locator('#play-result').click();await manager.waitForFunction(()=>{const video=document.querySelector('#result-playback');return !video.hidden&&video.readyState>=2;});
+  const output=await getSavedRecording(manager,'selected-only');results.push({test:'selected-only-background-pause-seek-scroll',...await analyze(output)});await discard(manager);
+
+  await page.evaluate(()=>{document.querySelector('#target').muted=true;});await select(manager,'赤い対象動画');await start(manager);
+  assert.equal(await manager.locator('#record-state').getAttribute('data-state'),'awaiting-audio-decision','source mute is explicitly handled before recording');
+  await manager.locator('#cancel-record-start').click();await manager.waitForFunction(()=>!['starting','awaiting-audio-decision'].includes(document.querySelector('#record-state').dataset.state));
+  await start(manager);await manager.locator('#continue-without-audio').click();await manager.waitForFunction(()=>document.querySelector('#record-state').dataset.state==='recording');
+  await sleep(900);await manager.locator('#stop-record').click();await stopped(manager);const silentResult=await getSavedRecording(manager,'muted-explicitly-silent');results.push({test:'muted-explicitly-silent',...await analyze(silentResult,{audio:false})});await discard(manager);await page.evaluate(()=>{document.querySelector('#target').muted=false;});
+
+  await select(manager,'CORS不許可動画');await start(manager);assert.equal(await manager.locator('#record-state').getAttribute('data-state'),'error');
+  assert.match(await manager.locator('#record-message').textContent(),/取得|制限|保護/);assert.equal(await manager.locator('[name="record-mode"]:checked').inputValue(),'video','CORS failure never changes to whole-tab recording');
+  await normalRecording(manager,'CORS許可動画','cors-allowed');
+  await normalRecording(manager,'MSE動画','mse-playback',{audio:false});
+  await normalRecording(manager,'同origin埋め込み','same-origin-frame');
+  await normalRecording(manager,'別origin埋め込み','cross-origin-frame');
+  await normalRecording(manager,'srcObject動画','src-object');
+  assert.equal(await page.evaluate(()=>originalSyntheticStream.getTracks().every(track=>track.readyState==='live')),true,'capture cleanup preserves the original srcObject tracks');
+
+
+  // Only the picker boundary is replaced; the origin-private handle, writable,
+  // ordered writes, close and getFile are real browser implementations.
+  await manager.evaluate(async()=>{
+    const directory=await navigator.storage.getDirectory();
+    window.__qaOutput=await directory.getFileHandle('video-only-streamed.webm',{create:true});
+    window.showSaveFilePicker=async()=>window.__qaOutput;
+  });
+  console.log('video-only QA: real OPFS sequential writer');
+  await select(manager,'赤い対象動画');await manager.locator('.output-settings > summary').click();await manager.locator('#record-output').selectOption('file');await manager.locator('#choose-file').click();
+  await start(manager);assert.equal(await manager.locator('#record-state').getAttribute('data-state'),'recording');await sleep(900);
+  await manager.locator('#stop-record').click();await stopped(manager);assert.equal(await manager.locator('#record-state').getAttribute('data-state'),'saved');
+  const streamedPath=join(scratch,'real-opfs-streamed.webm');await writeFile(streamedPath,Buffer.from(await manager.evaluate(async()=>[...new Uint8Array(await(await window.__qaOutput.getFile()).arrayBuffer())])));
+  results.push({test:'real-opfs-sequential-writer',...await analyze(streamedPath)});await discard(manager);await manager.locator('#record-output').selectOption('memory');
+
+  // Automatic source ending finalizes, and a source replacement never follows the new video.
+  await select(manager,'赤い対象動画');await start(manager);await sleep(700);
+  await page.evaluate(()=>{const target=document.querySelector('#target');target.loop=false;target.currentTime=target.duration-0.6;});await stopped(manager);
+  assert.equal(await manager.locator('#record-state').getAttribute('data-state'),'ready',await manager.locator('#record-message').textContent());
+  assert.match(await manager.locator('#record-message').textContent(),/終了/);await discard(manager);
+  await page.evaluate(async()=>{const target=document.querySelector('#target');target.loop=true;target.currentTime=0;await target.play();});
+  await select(manager,'赤い対象動画');await start(manager);await sleep(700);await page.evaluate(async()=>{const target=document.querySelector('#target');target.src='/other.webm';await target.play();});await stopped(manager);
+  assert.equal(await manager.locator('[name="record-mode"]:checked').inputValue(),'video');assert.match(await manager.locator('#record-message').textContent(),/変わ|構成|終了|取得/);await discard(manager);
+  await scan(manager);await select(manager,'赤い対象動画');await start(manager);await sleep(900);await page.close();await stopped(manager);
+  assert.equal(await manager.locator('#record-state').getAttribute('data-state'),'error','source disappearance is a recoverable error, not successful completion');
+  assert.match(await manager.locator('#record-message').textContent(),/取得済|接続|終了/);assert.equal(await manager.locator('#save-record').isVisible(),true,'received bytes can be rescued after source loss');
+  assert.equal(await manager.evaluate(async()=>Boolean((await chrome.storage.session.get('captureLock')).captureLock)),false,'recording ownership is released');
+  assert.deepEqual(pageErrors,[],'no uncaught source or extension page errors');
+  console.log(JSON.stringify({result:'PASS',chrome:await worker.evaluate(()=>navigator.userAgent),results,screenshots:process.env.QA_SCREENSHOT_DIR||null,nativePromptsAndHumanListening:'not tested'}));
+  if(process.env.QA_KEEP)console.log(`QA files retained locally: ${scratch}`);
+} finally {
+  clearTimeout(watchdog);await context?.close();if(server)await new Promise(resolve=>server.close(resolve));if(crossServer)await new Promise(resolve=>crossServer.close(resolve));
+  if(!process.env.QA_KEEP)await rm(scratch,{recursive:true,force:true});
+}

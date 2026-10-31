@@ -1,5 +1,15 @@
 # QA — v0.1
 
+## 動画だけの録画 — 2026-10-31 / v0.6.0
+
+- `npm test`: 292件PASS、失敗・SKIPなし。`npm run check`、`git diff --check`: PASS。Chrome116+/MV3・権限・ビルド不要の構成を維持。
+- 既存の隔離Chrome `npm run test:browser` と `npm run test:embedded`: PASS。直接保存/HLS/DASH/blob、形式選択、録画結果保護などの回帰を確認。
+- `npm run test:video`: Chrome156とChrome for Testing116で実動画要素→実captureStream→source録画→Chrome messaging→WebM保存・結果再生を試験。対象色・対象音の分離、背景、pause/seek/scroll/resize、音声判断/CORS/MSE/同別origin iframe/srcObject、入力track維持、自然終了/差替え/元タブ消失、実OPFS順次保存を確認。各Chrome8本の成果物を全編decode。
+- source/転送/所有権の独立レビューで見つかった問題を修正し再レビューPASS。初期track通知とsrcObject入力共有は実ブラウザ試験で検出・修正。画像候補除外修正を取り込み、既存契約を保持して統合差分を独立確認。
+- 準備・録画中・結果の1280/360/320pxを撮影し、横overflowと停止/保存の可視性を確認。理解・音の聴取品質は未確認。
+
+方式・試作・指摘処理・実試験の境界と本人確認手順は [VIDEO-ONLY-RECORDING.md](VIDEO-ONLY-RECORDING.md)。実OS picker、個人の実サイト、実スピーカーでの聴取、動画だけの30分実時間/OSスリープ、MSE音声付き構成、人間の操作理解は今回未確認。以下の旧版の「録画は表示全体」は過去の仕様として扱う。
+
 ## サムネイル画像の動画候補混入修正 — 2026-10-31
 
 - `npm test`: 248件PASS、SKIPなし。追加7件で、video由来の画像リソース、既知画像14形式・大文字・query/hash・URL escape、画像MIME、JSON/OG、画像501件による候補上限の占有、過去sessionと前回候補の除外を検証。最初の追加6件は修正前の失敗も確認。動画URLのquery・ディレクトリ内の画像名、拡張子なし動画、動画blob、既存job/historyは保持する。
