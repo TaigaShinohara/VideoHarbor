@@ -28,4 +28,13 @@
 - 基準版とAだけを適用した一時コピーの両方で、隔離Chrome/localhostの既存browser smokeがPASS。音声欠落時の判断前に未録画である表示、明示続行、pause/stop、未保存保護、実download完了、順次保存の次回再選択、失敗後も保存先を再利用しないことを確認。
 - captureとfile pickerは合成の境界を使用し、MediaRecorderとChrome downloadは実処理。実OS picker・実音声・長時間・人間の理解は未確認。
 
-B〜Dの検証は実装後に追記する。
+### B — 候補の出典と鮮度
+
+各実documentの出典token、動画/config単位のoccurrence、完全URLのresourceを分離した。現在の候補500件と過去100件を別枠にし、成功したscanだけを原子的に置換する。再生中・frame内可視・DOM由来を優先する。読み込み履歴は現在の動画との対応未確認として区別する。旧sessionの結果とjobを保持し、blobは実documentIdへ問い合わせる。
+
+- collector/discovery/background/utils集中試験43件PASS、独立再実行でも43件PASS。その後、metadataの埋め込み先と実iframeを区別する追加試験を実施。
+- 独立審査で、実絶対pathをretryの予定filenameへ流用する問題、同URL再読込で古いscanが採用される問題、一時outlineのCSSOM正規化と連打時復旧を指摘。actualFilename分離、commit前の実document検査、所有timerによる復旧へ修正し、再審査で解消。
+- inspect/showは当拡張の既知downloadIdまたはbyExtensionIdを単一IDで確認する。別のダウンロード履歴全体は取得しない。
+- 実allFrames、about:blank/srcdoc、元ページの一時強調の見た目はCのブラウザ統合で確認する。
+
+C〜Dの検証は実装後に追記する。
