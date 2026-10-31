@@ -7,6 +7,7 @@ assert.equal(manifest.manifest_version,3);
 assert.equal(manifest.background.type,'module');
 assert.ok(!manifest.host_permissions && !manifest.content_scripts && !manifest.externally_connectable);
 assert.ok(!manifest.permissions.some(x=>['debugger','webRequest','history','cookies','tabs'].includes(x)));
+assert.deepEqual(manifest.optional_host_permissions,['https://*/*','http://*/*'],'Site access must remain optional, never a required grant');
 const html=await readFile(new URL('extension/workspace.html',root),'utf8');
 assert.ok(!/<script[^>]*>\s*[^<\s]/i.test(html),'Inline scripts are forbidden');
 for(const m of html.matchAll(/(?:src|href)="([^"#]+)"/g)) assert.ok(!/^https?:/i.test(m[1]),'No remote executable UI assets');

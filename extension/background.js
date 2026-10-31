@@ -1,5 +1,6 @@
 import { collect } from './collector.js';
-import { allowedURL, mediaType, mergeItems, downloadName, summarizeJobs, publicError } from './utils.js';
+import { readPageBlob } from './page-blob.js';
+import { allowedURL, mediaKind, mergeItems, downloadName, summarizeJobs, publicError } from './utils.js';
 const KIND = 'videos';
 const PREFIX = 'workspace:';
 let operations = Promise.resolve();
@@ -51,12 +52,27 @@ async function scan(state) {
   const tab = await liveTab(state.tabId);
   if (!tab || tab.url !== state.url) throw new Error('元ページが閉じられたか移動しました。そのページで拡張アイコンを押し直してください。');
   if (!/^https?:\/\//.test(tab.url)) throw new Error('通常のHTTP/HTTPSページで拡張アイコンを押してください。Chromeの設定・ストア等は取得できません。');
-  const results = await chrome.scripting.executeScript({target:{tabId:state.tabId},func:collect});
-  const result = results[0]?.result;
-  if (!result) throw new Error('ページの画像・動画を取得できませんでした。元ページからやり直してください。');
-  const incoming = result.items.map(item => ({...item, type:KIND === 'videos' ? (mediaType(item.url,item.mime)==='unknown' && item.source==='video' && /^https?:/.test(item.url) ? 'direct' : mediaType(item.url,item.mime)) : 'image'}));
-  state.items = mergeItems(state.items,incoming).slice(0,500);
-  state.notices = result.notices;
+  // Chrome injects only into frames for which activeTab or a site grant permits access.
+  let results;
+  try { results = await chrome.scripting.executeScript({target:{tabId:state.tabId,allFrames:true},func:collect}); }
+  catch { results = await chrome.scripting.executeScript({target:{tabId:state.tabId},func:collect}); }
+  const collected = results.filter(r=>r.result?.items);
+  if (!collected.length) throw new Error('ページの動画を取得できませんでした。元ページからやり直してください。');
+  const incoming = collected.flatMap(({result,frameId=0})=>result.items.map(item => {
+    const kind=mediaKind(item.url,item.mime);
+    return {...item, frameId, type:kind==='unknown' && (item.source==='video' || item.mediaHint) && /^https?:/.test(item.url) ? 'direct' : kind};
+  }));
+  state.items = mergeItems(state.items,incoming).slice(0,500).map(item=>{
+    const kind=mediaKind(item.url,item.mime);
+    return {...item,type:kind==='unknown' && (item.source==='video' || item.mediaHint) && /^https?:/.test(item.url) ? 'direct' : kind};
+  });
+  state.notices = [...new Set(collected.flatMap(r=>r.result.notices || []))];
+  state.frames = [...new Map(collected.flatMap(r=>r.result.frames || []).map(f=>[f.url,f])).values()].slice(0,100);
+  state.frames = (await Promise.all(state.frames.map(async frame=> {
+    const url=new URL(frame.url);
+    const pattern=`${url.protocol}//${url.hostname}/*`;
+    return url.origin===new URL(state.url).origin || await chrome.permissions.contains({origins:[pattern]}) ? null : frame;
+  }))).filter(Boolean);
   if (state.items.length === 500) state.notices = [...new Set([...state.notices,'候補は500件まで表示します。'])];
   state.scanned = true;
   await save(state); return state;
@@ -114,6 +130,15 @@ chrome.runtime.onMessage.addListener((message,sender,respond) => {
     switch(message.type) {
       case 'get': return pump(state);
       case 'scan': return scan(state);
+      case 'blob-read': {
+        const item=state.items.find(i=>i.url===message.url && i.type==='blob');
+        const tab=await liveTab(state.tabId);
+        if(!item || !tab || tab.url!==state.url) throw new Error('元ページの動画情報が変わりました。元ページから開き直してください。');
+        if(!Number.isSafeInteger(message.offset) || message.offset < -2 || !/^[a-f0-9-]{36}$/.test(message.token)) throw new Error('動画データの指定が不正です。');
+        const [result]=await chrome.scripting.executeScript({target:{tabId:state.tabId,frameIds:[item.frameId || 0]},func:readPageBlob,args:[item.url,message.offset,message.token]});
+        if(!result?.result || result.result.error) throw new Error(result?.result?.error || 'ページ内動画を取得できませんでした。');
+        return result.result;
+      }
       case 'source': { const tab = await liveTab(state.tabId); if(!tab) throw new Error('元ページは閉じられています。'); await chrome.tabs.update(state.tabId,{active:true}); return {}; }
       case 'save': {
         if (active(state)) throw new Error('保存処理中です。');
