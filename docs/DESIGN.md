@@ -1,5 +1,15 @@
 # ImageCrate / VideoHarbor — initial design v1
 
+## セキュリティ強化 — 2026-10-31 / v0.5.1
+
+未信頼のMP4で各runから過去range/mdatを全走査していた処理を、検査用rangeだけのsort・隣接検査と物理順mdatの一方向走査へ変更する。元のtrun・圧縮bytes・sample順・時刻・offsetは変更しない。HLS top-level検査は全type配列を保持せず4種類の存在bitだけを持ち、init/segment/両trackで250,000 boxesの共通予算を適用する。muxのnested box250,000/sample4,000,000予算とは別の検査phaseとして数える。
+
+workspaceは許可・fetch・UI・Chrome downloadを所有し、同梱module Workerへ固定kindのbinary検査/mux/remuxだけを渡す。Workerは同じ拡張のcontextであり、権限隔離という説明はしない。ArrayBufferをtransferし、検査後に所有権が戻ったbytesを次の処理で使う。URL/許可/file handle/downloadはWorker protocolへ渡さない。
+
+1保存operationがcontroller/processor/download IDを所有する。要求IDとkindが一致した返答だけ採用し、abort・Worker error/messageerror・120秒timeout・pagehideでWorkerとlistenerを解放する。起動失敗時に重い同期処理へfallbackしない。取消後も後片付けが終わるまで次の保存は排他し、受付済downloadは実終端を照合する。完成した同形式retry Blobの再利用と、取消・失敗で不完全な解析結果を保存しない契約を保つ。
+
+検証の合否とnative未確認は [SECURITY-VALIDATION-2026-10-31.md](SECURITY-VALIDATION-2026-10-31.md) に記録する。既知の脆弱な処理へ戻すrollbackは採用しない。
+
 ## UX 6件の対応 — 2026-10-31 / v0.5.0
 
 以下は旧版の累積候補・URL主体一覧・保存先再利用・結果図形だけの説明に優先する。

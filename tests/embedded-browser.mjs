@@ -7,6 +7,7 @@ import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createServer} from 'node:http';
 import {spawnSync} from 'node:child_process';
+import {launchTestExtension} from './chrome-runtime.mjs';
 const {chromium}=await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const repo=fileURLToPath(new URL('../',import.meta.url));
 const scratch=await mkdtemp(join(tmpdir(),'videoharbor-embedded-qa-'));
@@ -84,15 +85,12 @@ async function openFixture(profile,manifest,origin) {
   const downloadFolder=join(scratch,profile+'-downloads');await mkdir(downloadFolder);
   const profileDefault=join(scratch,profile,'Default');await mkdir(profileDefault,{recursive:true});
   await writeFile(join(profileDefault,'Preferences'),JSON.stringify({download:{default_directory:downloadFolder,prompt_for_download:false,directory_upgrade:true}}));
-  context=await chromium.launchPersistentContext(join(scratch,profile),{
-    channel:process.env.CHROME_CHANNEL || 'chrome',headless:true,acceptDownloads:false,
+  const runtime=await launchTestExtension(chromium,join(scratch,profile),extension,{
+    acceptDownloads:false,
     viewport:{width:1280,height:900},ignoreDefaultArgs:['--disable-extensions'],
-    args:['--enable-unsafe-extension-debugging','--autoplay-policy=no-user-gesture-required','--no-first-run'],
+    args:['--autoplay-policy=no-user-gesture-required','--no-first-run'],
   });
-  const browserSession=await context.browser().newBrowserCDPSession();
-  const {id}=await browserSession.send('Extensions.loadUnpacked',{path:extension});
-  let worker=context.serviceWorkers().find(w=>w.url().includes(id));
-  if(!worker)worker=await context.waitForEvent('serviceworker',{predicate:w=>w.url().includes(id)});
+  context=runtime.context;const {worker}=runtime;
   const page=await context.newPage();await page.goto(origin);
   await page.waitForFunction(()=>document.querySelector('#cross-frame')?.contentWindow && document.readyState==='complete');
   const tab=await worker.evaluate(async origin=>(await chrome.tabs.query({})).find(t=>t.url===origin+'/'),origin);
@@ -102,7 +100,9 @@ async function openFixture(profile,manifest,origin) {
   await manager.waitForFunction(()=>document.querySelector('#message').textContent.includes('候補を取得'));
   const session=await context.newCDPSession(manager);
   const {targetInfo}=await session.send('Target.getTargetInfo');
-  await session.send('Browser.setDownloadBehavior',{behavior:'default',eventsEnabled:true,...(targetInfo.browserContextId ? {browserContextId:targetInfo.browserContextId} : {})});
+  // Chrome 116 exposes an ID for the default persistent context that this CDP
+  // command cannot resolve. Omitting it selects that same real default context.
+  await session.send('Browser.setDownloadBehavior',{behavior:'default',eventsEnabled:true,...(targetInfo.browserContextId&&!runtime.legacy ? {browserContextId:targetInfo.browserContextId} : {})});
   return {page,manager,worker};
 }
 const mediaButton=(manager,url)=>manager.locator(`button.media-save[data-url=${JSON.stringify(url)}]`);

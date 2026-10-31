@@ -20,13 +20,25 @@ const load = async id => { const state=(await chrome.storage.session.get(PREFIX 
 const all = async () => Object.entries(await chrome.storage.session.get(null)).filter(([k]) => k.startsWith(PREFIX)).map(([,v])=>v);
 const active = state => summarizeJobs(state.jobs).active > 0;
 async function liveTab(id) { try { return await chrome.tabs.get(id); } catch { return null; } }
+async function workspaceURL(id) {
+  const tab=await liveTab(id);if(!tab)return null;
+  // Chrome 116 may omit even this extension's tab URL without the tabs grant.
+  // Its own extension contexts provide the identity without broader permission.
+  if(typeof chrome.runtime.getContexts==='function') {
+    const contexts=await chrome.runtime.getContexts({contextTypes:['TAB'],tabIds:[id]});
+    const documentURL=contexts.find(context=>context.frameId===0)?.documentUrl;
+    if(!documentURL && tab.status==='loading')throw new Error('作業画面を読み込み中です。少し待ってから再試行してください。');
+    return documentURL || null;
+  }
+  return tab.url || null;
+}
 
 export async function openWorkspace(tab) {
   return serial(async () => {
     const existing = await all();
     for (const state of existing) {
-      const manager=await liveTab(state.workspaceTabId);
-      if (manager?.url !== chrome.runtime.getURL(`workspace.html?id=${state.id}`)) { state.closed=true;state.items=[];state.previousItems=[];state.history=[];if(active(state)) await pump(state); if(!active(state)) await chrome.storage.session.remove(PREFIX + state.id); continue; }
+      const managerURL=await workspaceURL(state.workspaceTabId);
+      if (managerURL !== chrome.runtime.getURL(`workspace.html?id=${state.id}`)) { state.closed=true;state.items=[];state.previousItems=[];state.history=[];if(active(state)) await pump(state); if(!active(state)) await chrome.storage.session.remove(PREFIX + state.id); continue; }
       if (state.tabId === tab.id && state.url === tab.url) {
         await chrome.tabs.update(state.workspaceTabId, {active:true}); return state.id;
       }
@@ -133,15 +145,16 @@ async function pump(state) {
 async function claim(state, instance, mode, wantStream = true) {
   if (KIND !== 'videos') throw new Error('未対応の操作です。');
   const current = (await chrome.storage.session.get('captureLock')).captureLock;
-  const owner=current && await liveTab(current.tabId);
-  const ownerLive=owner?.url?.startsWith(chrome.runtime.getURL('workspace.html?id='));
+  const ownerURL=current && await workspaceURL(current.tabId);
+  const ownerState=current && (current.sessionId ? await load(current.sessionId) : (await all()).find(state=>state.workspaceTabId===current.tabId));
+  const ownerLive=ownerState && !ownerState.closed && ownerState.workspaceTabId===current.tabId && ownerURL===chrome.runtime.getURL(`workspace.html?id=${ownerState.id}`);
   if(current && !ownerLive) await chrome.storage.session.remove('captureLock');
   if (current && ownerLive && (current.tabId !== state.workspaceTabId || current.instance !== instance)) {
     throw new Error('別の作業タブで録画中です。停止してから開始してください。');
   }
   // Same owner may not start another capture while one is active.
   if (ownerLive && current?.instance === instance) throw new Error('録画はすでに開始されています。');
-  await chrome.storage.session.set({captureLock:{tabId:state.workspaceTabId,instance,mode}});
+  await chrome.storage.session.set({captureLock:{tabId:state.workspaceTabId,sessionId:state.id,instance,mode}});
   try {
     if (mode !== 'tab' || !wantStream) return {};
     const tab = await liveTab(state.tabId);

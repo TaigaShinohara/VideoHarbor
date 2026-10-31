@@ -1,5 +1,11 @@
 # QA — v0.1
 
+## セキュリティ修正 — 2026-10-31 / v0.5.1
+
+MP4の計算量、HLS構造metadata、同梱Worker、operation取消とChrome116の状態保持を修正した。検証の対象・実環境・合否・未確認は [SECURITY-VALIDATION-2026-10-31.md](SECURITY-VALIDATION-2026-10-31.md) を正本とする。
+
+現行ChromeとChrome116のbrowser smoke/embedded/実Worker/合成HTTP/HTTPS認証・redirect試験はPASS。現行Chromeでの実時間30分の背景合成録画は本番上限による自動停止、全編decode、track/lock解放までPASS。Chrome116での30分実時間試験は未実施。実OSの許可/共有/保存picker・実音声・個人の実サイト認証は本人の選択により後日であり、今回の自動PASSとは分ける。
+
 ## UX 6件の対応 — 2026-10-31 / v0.5.0
 
 旧版の結果は以下に履歴として残す。今回の実装・検証の詳細と独立審査は [UX-COMPLETION.md](UX-COMPLETION.md)、本人が触れる合成ページと操作条件は [UX-MANUAL.md](UX-MANUAL.md)。

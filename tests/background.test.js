@@ -34,6 +34,7 @@ async function browser(t) {
   const requested = [], scripts = [], shown = [];
   let scriptResults = [], scriptError, permissionError, lastCollection=[], documentResult;
   let nextDownloadId = 8;
+  let nextTabId = 200;
   const changed = event();
   const removed = event();
   const messages = event();
@@ -50,6 +51,7 @@ async function browser(t) {
       async remove(key) { store.delete(key); },
     } },
     tabs: { onRemoved: removed,
+      async create(values) {const tab={id:nextTabId++,...values};tabs.set(tab.id,tab);return clone(tab);},
       async get(id) { if (!tabs.has(id)) throw new Error('No such tab'); return clone(tabs.get(id)); },
       async update(id, values) { Object.assign(tabs.get(id), values); return clone(tabs.get(id)); },
     },
@@ -85,7 +87,7 @@ async function browser(t) {
     if (previous) Object.defineProperty(globalThis, 'chrome', previous); else delete globalThis.chrome;
   });
   // Each test gets a new worker module and independent event registrations/storage.
-  await import(`${new URL('../extension/background.js', import.meta.url).href}?test=${moduleNumber++}`);
+  const module=await import(`${new URL('../extension/background.js', import.meta.url).href}?test=${moduleNumber++}`);
   const state = {
     id: 'work', tabId: 1, workspaceTabId: 100, url: 'https://source.test/', title: 'Source',
     items: [], previousItems: [], scan:{version:DISCOVERY_VERSION,sequence:0,at:null}, notices: [], scanned: true, jobs: [],
@@ -93,7 +95,7 @@ async function browser(t) {
   const persist = () => store.set('workspace:work', clone(state));
   persist();
   return {
-    state, store, tabs, downloads, requested, persist, scripts, shown,
+    state, store, tabs, downloads, requested, persist, scripts, shown, chrome, openWorkspace:module.openWorkspace,
     setScriptResults(results) { scriptResults = results; },
     setDocumentResult(result) { documentResult = result; },
     failScript(error) { scriptError=error; },
@@ -136,6 +138,63 @@ test('BG-01: closing the workspace preserves and completes the already accepted 
     return !saved || saved.jobs.every((job) => ['complete', 'interrupted'].includes(job.status));
   }, 'closed workspace must not leave a queued or in-progress batch after all downloads finish');
   assert.equal(h.requested.length, 1, 'neither completed file is downloaded a second time');
+});
+
+test('Chrome 116 missing tab URLs do not erase a live workspace when another source is opened',async t=>{
+  const h=await browser(t);delete h.tabs.get(100).url;
+  h.chrome.runtime.getContexts=async filter=>{
+    assert.deepEqual(filter.contextTypes,['TAB']);
+    return filter.tabIds.includes(100) ? [{tabId:100,frameId:0,documentUrl:'chrome-extension://test/workspace.html?id=work'}] : [];
+  };
+  const id=await h.openWorkspace({id:2,url:'https://second.test/',title:'Second'});
+  assert.notEqual(id,'work');assert.equal(h.store.has('workspace:work'),true);
+  assert.equal(h.store.get('workspace:work').closed,undefined);
+  assert.equal(h.store.has('workspace:'+id),true);
+});
+
+test('extension contexts preserve a live recording lock without exposing tab URLs',async t=>{
+  const h=await browser(t);h.tabs.set(999,{id:999});
+  h.store.set('workspace:owner',{...h.state,id:'owner',workspaceTabId:999});
+  h.store.set('captureLock',{tabId:999,instance:'owner',mode:'display'});
+  h.chrome.runtime.getContexts=async()=>[{tabId:999,frameId:0,documentUrl:'chrome-extension://test/workspace.html?id=owner'}];
+  const response=await h.send({type:'capture',mode:'display'});
+  assert.equal(response.ok,false);assert.match(response.error,/別の作業タブ/);
+  assert.equal(h.store.get('captureLock').instance,'owner');
+});
+
+for(const registered of [false,true])test(`a workspace-looking document cannot keep capture locked with ${registered ? 'a different' : 'no'} owner session`,async t=>{
+    const h=await browser(t);h.tabs.set(999,{id:999});
+    if(registered)h.store.set('workspace:owner',{...h.state,id:'owner',workspaceTabId:999});
+    h.store.set('captureLock',{tabId:999,instance:'departed',sessionId:'owner',mode:'display'});
+    h.chrome.runtime.getContexts=async()=>[{tabId:999,frameId:0,documentUrl:`chrome-extension://test/workspace.html?id=${registered ? 'missing' : 'owner'}`}];
+    const response=await h.send({type:'capture',mode:'display'});
+    assert.equal(response.ok,true,response.error);
+    assert.equal(h.store.get('captureLock').tabId,100);
+    assert.equal(h.store.get('captureLock').sessionId,'work');
+});
+
+test('a context lookup failure never erases another workspace or its recording lock',async t=>{
+  const h=await browser(t);h.store.set('captureLock',{tabId:100,instance:'owner',mode:'display'});
+  h.chrome.runtime.getContexts=async()=>{throw new Error('synthetic context query failed');};
+  await assert.rejects(h.openWorkspace({id:2,url:'https://second.test/'}),/context query failed/);
+  assert.equal(h.store.has('workspace:work'),true);
+  const response=await h.send({type:'capture',mode:'display'});
+  assert.equal(response.ok,false);assert.equal(h.store.get('captureLock').instance,'owner');
+});
+
+test('a loading workspace without a registered document is retained until its identity can be checked',async t=>{
+  const h=await browser(t);delete h.tabs.get(100).url;h.tabs.get(100).status='loading';
+  h.chrome.runtime.getContexts=async()=>[];
+  await assert.rejects(h.openWorkspace({id:2,url:'https://second.test/'}),/読み込み中/);
+  assert.equal(h.store.has('workspace:work'),true);assert.equal(h.store.get('workspace:work').closed,undefined);
+});
+
+test('contexts reclaim navigated owners and reject iframe contexts as workspace identity',async t=>{
+  const h=await browser(t);h.tabs.set(999,{id:999});
+  h.store.set('captureLock',{tabId:999,instance:'departed',mode:'display'});
+  h.chrome.runtime.getContexts=async()=>[{tabId:999,frameId:3,documentUrl:'chrome-extension://test/workspace.html?id=frame'}];
+  const response=await h.send({type:'capture',mode:'display'});
+  assert.equal(response.ok,true);assert.equal(h.store.get('captureLock').tabId,100);
 });
 
 test('BG-02: a capture owner that navigated away cannot keep another workspace locked',
