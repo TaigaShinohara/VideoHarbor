@@ -42,13 +42,14 @@ function displayTarget(stream) {
     monitor: '共有ダイアログで選んだ画面' }[surface] || '共有ダイアログで選んだ対象';
 }
 
-/** Media lifetime stays in this visible extension page, never in the service worker. */
+/** Saving lives in this extension page; element capture stays in its exact source frame. */
 export class RecorderController {
-  constructor({ onUpdate = () => {}, source = {}, acquire, release }) {
+  constructor({ onUpdate = () => {}, source = {}, acquire, release, prepareVideo }) {
     this.onUpdate = onUpdate;
     this.source = source;
     this.acquire = acquire;
     this.release = release;
+    this.prepareVideo = prepareVideo;
     this._phase = 'idle';
     this._message = '対象と音声、保存方法を選んで録画を開始してください。形式はWebMです。';
     this._pendingOutputHandle = null;
@@ -85,6 +86,7 @@ export class RecorderController {
       mime: value?.mime || 'video/webm',
       format: 'WebM',
       playbackBlocked: this._session?.audioContext?.state === 'suspended',
+      controlPending: Boolean(this._session?.controlPending),
     };
   }
 
@@ -128,13 +130,16 @@ export class RecorderController {
     }
   }
 
-  start(mode, audio, output) {
+  start(mode, audio, output, reference = null) {
     if (this.busy) return Promise.resolve(this._refuse('録画や保存の処理中です。終了するまでお待ちください。'));
     if (this._result?.blob && !this._result.saved) {
       return Promise.resolve(this._refuse('前の録画を保存するか、破棄してから新しい録画を開始してください。'));
     }
-    if (!['tab', 'display'].includes(mode) || !['memory', 'file'].includes(output)) {
+    if (!['video', 'tab', 'display'].includes(mode) || !['memory', 'file'].includes(output)) {
       return Promise.resolve(this._refuse('録画対象と保存方法を選んでください。'));
+    }
+    if (mode === 'video' && (!reference?.elementToken || typeof this.prepareVideo !== 'function')) {
+      return Promise.resolve(this._refuse('録画する動画を選んでください。見つからない場合は元ページで再生して再スキャンしてください。'));
     }
     if (output === 'file' && !this._pendingOutputHandle) {
       return Promise.resolve(this._refuse('先に保存先のファイルを選んでください。'));
@@ -145,13 +150,13 @@ export class RecorderController {
     }
     const op = { mode, audio: false, audioRequested: Boolean(audio), output, mime, cancelled: false, locked: false,
       outputHandle: output === 'file' ? this._pendingOutputHandle : null,
-      stream: null, writable: null, audioContext: null, trackListeners: [],
-      method: mode, target: mode === 'tab' ? (this.source.title || '元のタブ') : '',
-      fileName: output === 'file' ? this._pendingOutputHandle.name : recordingName(this.source.title) };
+      stream: null, remote: null, reference, writable: null, audioContext: null, trackListeners: [],
+      method: mode, target: mode === 'video' ? (reference.title || '選んだ動画') : mode === 'tab' ? (this.source.title || '元のタブ') : '',
+      fileName: output === 'file' ? this._pendingOutputHandle.name : recordingName(mode === 'video' ? reference.title || this.source.title : this.source.title) };
     op.cancellation = new Promise((resolve) => { op.resolveCancellation = resolve; });
     this._pendingStart = op;
     this._phase = 'starting';
-    this._message = '録画の準備中です。共有する対象を確認してください。';
+    this._message = mode === 'video' ? '選んだ動画の映像と音声を確認しています。' : '録画の準備中です。共有する対象を確認してください。';
     let capturePromise;
     try {
       if (mode === 'display') {
@@ -183,6 +188,10 @@ export class RecorderController {
 
   _checkStart(op) {
     if (op.cancelled) throw new DOMException('Cancelled', 'AbortError');
+    if (op.mode === 'video') {
+      if (!op.remote?.available) throw Object.assign(new Error('選んだ動画の取得が終了しました。元ページを確認して選び直してください。'), {name:'CaptureControlError'});
+      return;
+    }
     if (!op.stream.getVideoTracks().some((track) => track.readyState !== 'ended')) {
       throw new DOMException('Sharing stopped', 'NotReadableError');
     }
@@ -214,7 +223,24 @@ export class RecorderController {
 
   async _begin(op, capturePromise) {
     try {
-      if (op.mode === 'display') {
+      if (op.mode === 'video') {
+        await this.acquire('video');
+        op.locked = true;
+        if (op.cancelled) throw new DOMException('Cancelled', 'AbortError');
+        const preparation = Promise.resolve(this.prepareVideo({reference: op.reference, audio: op.audioRequested, mimeType: op.mime}));
+        preparation.then(remote => {
+          if (op.cancelled && op.remote !== remote) Promise.resolve(remote.close()).catch(() => {});
+        }, () => {});
+        op.remote = await Promise.race([preparation, op.cancellation.then(() => { throw new DOMException('Cancelled', 'AbortError'); })]);
+        op.audio = Boolean(op.remote.audio);
+        op.audioReason = op.remote.audioReason || '';
+        op.target = op.remote.target || op.target;
+        const ended = () => this._cancelPending(op, '選んだ動画の取得が終了したため、録画の開始を中止しました。');
+        for (const type of ['error','stop']) {
+          op.remote.addEventListener(type, ended);
+          op.trackListeners.push([op.remote, ended, type]);
+        }
+      } else if (op.mode === 'display') {
         await this._capture(op, capturePromise);
         await this.acquire('display');
         op.locked = true;
@@ -232,7 +258,7 @@ export class RecorderController {
       this._checkStart(op);
       if (op.audioRequested && !op.audio) {
         this._phase = 'awaiting-audio-decision';
-        this._message = '音声を取得できませんでした。共有中ですが、まだ録画していません。音声なしで続けるか、対象を選び直してください。';
+        this._message = `${op.audioReason || '音声を取得できませんでした。'} まだ録画していません。音声なしで続けるか、対象を選び直してください。`;
         const decision = new Promise((resolve) => { op.resolveAudioDecision = resolve; });
         this._emit();
         if (!await decision) throw new DOMException('Cancelled', 'AbortError');
@@ -263,22 +289,30 @@ export class RecorderController {
         trackListeners: [], finalPromise: null,
       };
       session.stopped = new Promise((resolve) => { session.resolveStopped = resolve; });
-      const recorder = new MediaRecorder(op.stream, { mimeType: op.mime, videoBitsPerSecond: 4_000_000 });
+      const recorder = op.remote || new MediaRecorder(op.stream, { mimeType: op.mime, videoBitsPerSecond: 4_000_000 });
+      op.pendingSession = session;
       session.recorder = recorder;
       session.mime = recorder.mimeType || op.mime;
       recorder.addEventListener('dataavailable', (event) => this._chunk(session, event.data));
       recorder.addEventListener('stop', () => {
+        session.stopReason ||= recorder.reason || '';
         session.resolveStopped();
-        void this._finish(session);
+        if (this._session === session) void this._finish(session);
       });
       recorder.addEventListener('error', () => {
-        session.failure ||= '録画中にエラーが発生しました。';
-        void this._finish(session);
+        session.failure ||= op.mode === 'video' ? '動画の取得・転送が中断しました。' : '録画中にエラーが発生しました。';
+        if (this._session === session) void this._finish(session);
       });
-      recorder.start(1000);
+      try { await recorder.start(1000); }
+      catch (error) {
+        if (op.remote) error.name = 'CaptureControlError';
+        throw error;
+      }
+      this._checkStart(op);
+      if (session.failure || recorder.state === 'inactive') throw new DOMException('Recording stopped before start', 'NotReadableError');
       session.activeAt = performance.now();
       this._removeTrackListeners(op);
-      for (const track of op.stream.getTracks()) {
+      for (const track of op.stream?.getTracks() || []) {
         const ended = () => {
           session.stopReason ||= '共有が終了したため録画を停止しました。';
           void this._finish(session);
@@ -287,6 +321,7 @@ export class RecorderController {
         session.trackListeners.push([track, ended]);
       }
       this._session = session;
+      op.pendingSession = null;
       // Keep the previous result until both capture and MediaRecorder.start have succeeded.
       this._result = null;
       this._pendingStart = null;
@@ -303,6 +338,10 @@ export class RecorderController {
       this._emit();
       return true;
     } catch (error) {
+      if (op.pendingSession) {
+        op.pendingSession.cancelled = true;
+        try { await op.pendingSession.recorder?.stop(); } catch { /* Still clean up the source below. */ }
+      }
       this._removeTrackListeners(op);
       const releaseFailed = await this._cleanupResources(op);
       this._phase = this._restingPhase();
@@ -369,7 +408,7 @@ export class RecorderController {
   }
 
   _chunk(session, blob) {
-    if (!blob?.size) return;
+    if (session.cancelled || !blob?.size) return;
     session.bytes += blob.size;
     if (session.output === 'file') {
       session.pendingBytes += blob.size;
@@ -397,6 +436,7 @@ export class RecorderController {
   pause() {
     const session = this._session;
     if (this._phase !== 'recording' || !session) return false;
+    if (session.remote) return this._controlVideo(session, 'pause');
     try {
       session.recorder.pause();
       this._freezeTime(session);
@@ -410,6 +450,7 @@ export class RecorderController {
   resume() {
     const session = this._session;
     if (this._phase !== 'paused' || !session) return false;
+    if (session.remote) return this._controlVideo(session, 'resume');
     try {
       session.recorder.resume();
       session.activeAt = performance.now();
@@ -430,6 +471,22 @@ export class RecorderController {
     return true;
   }
 
+  async _controlVideo(session, command) {
+    if (session.controlPending) return false;
+    session.controlPending = true;
+    this._emit();
+    try {
+      await session.recorder[command]();
+      if (this._session !== session || session.finalPromise) return false;
+      if (command === 'pause') this._freezeTime(session);
+      else session.activeAt = performance.now();
+      this._phase = command === 'pause' ? 'paused' : 'recording';
+      this._message = command === 'pause' ? '録画を一時停止しています。元の動画の再生は続きます。' : '動画の録画を再開しました。';
+      return true;
+    } catch { return this._refuse('動画の録画を操作できませんでした。停止して元ページを確認してください。'); }
+    finally { session.controlPending = false; this._emit(); }
+  }
+
   _finish(session) {
     // Install the shared promise before stop() can synchronously dispatch any mocked/browser event.
     if (!session.finalPromise) session.finalPromise = Promise.resolve().then(() => this._finalize(session));
@@ -444,7 +501,7 @@ export class RecorderController {
     this._heartbeat = null;
     this._emit();
     if (session.recorder.state !== 'inactive') {
-      try { session.recorder.stop(); }
+      try { await session.recorder.stop(); }
       catch {
         session.failure ||= '録画を正常に終了できませんでした。';
         session.resolveStopped();
@@ -453,7 +510,7 @@ export class RecorderController {
     // The final dataavailable event precedes stop; await it before reading the write chain.
     await session.stopped;
     this._removeTrackListeners(session);
-    for (const track of session.stream.getTracks()) {
+    for (const track of session.stream?.getTracks() || []) {
       try { track.stop(); } catch { /* Stop all remaining capture tracks as well. */ }
     }
     // Sharing ends promptly even if flushing the file takes longer.
@@ -499,7 +556,7 @@ export class RecorderController {
   }
 
   _removeTrackListeners(session) {
-    for (const [track, listener] of session.trackListeners) track.removeEventListener('ended', listener);
+    for (const [track, listener, type = 'ended'] of session.trackListeners) track.removeEventListener(type, listener);
     session.trackListeners = [];
   }
 
@@ -508,6 +565,7 @@ export class RecorderController {
       try { track.stop(); } catch { /* Continue stopping the other tracks. */ }
     }
     try { await value.audioContext?.close(); } catch { /* Tracks already stopped. */ }
+    try { await value.remote?.close(); } catch { /* The source may have navigated; still release the lock. */ }
     if (value.writable) {
       try { await value.writable.abort(); } catch { /* Keep the failure visible in the result. */ }
       value.writable = null;

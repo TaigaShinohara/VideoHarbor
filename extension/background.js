@@ -1,6 +1,7 @@
 import { collect, locateSourceElement, inspectSourceDocument } from './collector.js';
 import { discoverySnapshot, migrateDiscovery, DISCOVERY_VERSION } from './discovery.js';
 import { readPageBlob } from './page-blob.js';
+import { controlPageVideo } from './page-video-recording.js';
 import { validateOutputFormat } from './output-format.js';
 import { allowedURL, downloadName, summarizeJobs, publicError } from './utils.js';
 const KIND = 'videos';
@@ -129,6 +130,50 @@ async function locate(state, ref) {
   await chrome.tabs.update(state.tabId,{active:true});
   return {found:true};
 }
+function videoReference(state, reference) {
+  if (!reference || typeof reference.elementToken !== 'string' || typeof reference.frameToken !== 'string'
+    || typeof reference.documentURL !== 'string') throw new Error('録画する動画を一覧から選んでください。');
+  const match = (state.videoElements || []).find(value => value.elementToken === reference.elementToken
+    && value.frameToken === reference.frameToken && value.documentURL === reference.documentURL
+    && (value.documentId ? value.documentId === reference.documentId : value.frameId === reference.frameId));
+  if (!match || match.elementTag !== 'VIDEO') throw new Error('選んだ動画が現在の一覧に見つかりません。再スキャンしてください。');
+  return match;
+}
+async function videoControl(state, message) {
+  if (!/^[a-f0-9-]{36}$/.test(message.token || '')
+    || !['prepare','poll','start','pause','resume','stop','close'].includes(message.command)) throw new Error('動画録画の指定が不正です。');
+  const ref = videoReference(state, message.reference);
+  const lock = (await chrome.storage.session.get('captureLock')).captureLock;
+  if (lock?.sessionId !== state.id || lock.tabId !== state.workspaceTabId || lock.instance !== message.instance || lock.mode !== 'video') {
+    throw new Error('この画面は動画の録画を所有していません。元ページから開き直してください。');
+  }
+  if (message.command === 'prepare') {
+    if (lock.videoToken && lock.videoToken !== message.token) throw new Error('動画の録画はすでに準備されています。');
+    lock.videoToken = message.token; lock.videoElementToken = ref.elementToken; lock.videoFrameToken = ref.frameToken;
+    await chrome.storage.session.set({captureLock:lock});
+  } else if (lock.videoToken !== message.token || lock.videoElementToken !== ref.elementToken || lock.videoFrameToken !== ref.frameToken) {
+    throw new Error('動画録画の接続が変わりました。元ページからやり直してください。');
+  }
+  const tab = await liveTab(state.tabId);
+  if (!tab || tab.url !== state.url) throw new Error('元ページが閉じられたか移動しました。取得済みの動画を確認してください。');
+  const target = {tabId:state.tabId,...(ref.documentId ? {documentIds:[ref.documentId]} : {frameIds:[ref.frameId || 0]})};
+  const request = {command:message.command,token:message.token,reference:ref,
+    audio:Boolean(message.audio),mimeType:message.mimeType,ack:message.ack};
+  let timer;
+  try {
+    const results = await Promise.race([
+      chrome.scripting.executeScript({target,func:controlPageVideo,args:[request]}),
+      new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('動画の取得が応答しません。取得済みのデータを確認してください。')),5000);}),
+    ]);
+    const result = results?.find(value => value.frameId === (ref.frameId || 0) && (!ref.documentId || value.documentId === ref.documentId))?.result;
+    if (!result) throw new Error('動画の取得が終了しました。取得済みのデータを確認してください。');
+    return result;
+  } catch (error) {
+    // executeScript failures can include private source URLs. Only fixed local messages leave this boundary.
+    throw new Error(error?.message?.startsWith('動画の取得') ? error.message : '元ページとの接続が終了しました。取得済みのデータを確認してください。');
+  } finally { clearTimeout(timer); }
+}
+
 async function pump(state) {
   for (const job of state.jobs) await refreshJob(job);
   if (!state.jobs.some(j=>j.status === 'in_progress')) {
@@ -172,6 +217,8 @@ chrome.runtime.onMessage.addListener((message,sender,respond) => {
     switch(message.type) {
       case 'get': return pump(state);
       case 'scan': return scan(state);
+      case 'video-control': return videoControl(state,message);
+      case 'locate-video': return locate(state,videoReference(state,message.reference));
       case 'blob-read': {
         const item=state.items.find(i=>i.url===message.url && i.type==='blob');
         const tab=await liveTab(state.tabId);

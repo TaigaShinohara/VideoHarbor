@@ -135,3 +135,40 @@ test('legacy cumulative sessions migrate to previous results without trusting in
   assert.equal(old.items[0].frameId,0,'migration must not alter the stored original on failure');
   assert.equal(migrateDiscovery(migrated),migrated);
 });
+
+test('recording targets retain their own Chrome document identity without a resource URL',()=>{
+  const before={...state(),videoElements:[{elementToken:'stale'}]};
+  const frame=injection(13,'child',[]);
+  frame.result.videoElements=[{elementTag:'VIDEO',elementToken:'real-video',videoRef:'real-video',frameId:0,documentId:'wrong',frameToken:'wrong',documentURL:'https://wrong.test',paused:false,playing:true}];
+  const output=discoverySnapshot(before,[frame]);
+  assert.equal(output.items.length,0);
+  assert.equal(output.videoElements.length,1);
+  assert.equal(output.videoElements[0].frameId,13);
+  assert.equal(output.videoElements[0].documentId,'child');
+  assert.equal(output.videoElements[0].frameToken,'frame-child');
+  assert.equal(output.videoElements[0].documentURL,'https://frame.test/child');
+  assert.equal(output.videoElements[0].url,undefined);
+  assert.equal(before.videoElements[0].elementToken,'stale','replacement stays atomic until commit');
+  assert.deepEqual(discoverySnapshot(before,[injection(0,'new',[])]).videoElements,[],'old recording refs are not retained as current targets');
+});
+
+test('global recording target limit prioritizes playing elements and excludes non-video references',()=>{
+  const top=injection(0,'top',[]),child=injection(7,'child',[]);
+  top.result.videoElements=Array.from({length:100},(_,i)=>({elementTag:'VIDEO',elementToken:`v${i}`,videoRef:`v${i}`,paused:true}));
+  child.result.videoElements=[
+    {elementTag:'SCRIPT',elementToken:'script',videoRef:'script'},
+    {elementTag:'VIDEO',elementToken:'different',videoRef:'wrong'},
+    {elementTag:'VIDEO',elementToken:'current',videoRef:'current',playing:true},
+  ];
+  const output=discoverySnapshot(state(),[top,child]);
+  assert.equal(output.videoElements.length,100);
+  assert.equal(output.videoElements[0].elementToken,'current');
+  assert.ok(output.notices.some(notice=>notice.includes('100')));
+  assert.ok(!output.videoElements.some(video=>video.elementTag!=='VIDEO' || video.elementToken!==video.videoRef));
+});
+
+test('legacy migration clears recording references and current sessions initialize an empty selector',()=>{
+  const legacy=migrateDiscovery({items:[],videoElements:[{elementToken:'inherited-frame'}]});
+  assert.deepEqual(legacy.videoElements,[]);
+  assert.deepEqual(migrateDiscovery(state()).videoElements,[]);
+});

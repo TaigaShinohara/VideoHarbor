@@ -117,7 +117,7 @@ button.small { min-height: 36px; padding: 7px 11px; font-size: .82rem; }
 .record-settings { display: grid; gap: 20px; min-width: 0; border: 1px solid var(--line); border-radius: 15px; padding: 21px; background: var(--paper); }
 fieldset { min-width: 0; margin: 0; border: 0; padding: 0; }
 legend { margin-bottom: 11px; padding: 0; color: var(--ink); font-size: .84rem; font-weight: 650; }
-.target-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.target-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .target-option { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 10px; min-width: 0; min-height: 104px; border: 1px solid var(--line); border-radius: 11px; padding: 15px 10px 12px; background: var(--paper); color: var(--muted); cursor: pointer; transition: background-color 120ms ease, border-color 120ms ease; }
 .target-option > .icon { width: 27px; height: 27px; }
 .target-option > span { color: var(--ink); font-size: .78rem; font-weight: 600; }
@@ -347,3 +347,9 @@ body.media-saving { padding-bottom: 200px; }
   .record-dot, .record-panel[data-state="recording"] #record-state::before { border: 1px solid currentColor; }
   button.primary, button.danger { border: 1px solid ButtonText; }
 }
+
+.video-choice { margin-top: 16px; }
+.video-choice select { width: 100%; min-width: 0; }
+.selected-video { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
+.selected-video .video-snapshot { width: 96px; height: 54px; object-fit: contain; }
+@media (max-width: 420px) { .target-options { grid-template-columns: 1fr; } .target-option { min-height: 58px; flex-direction: row; align-items: center; padding-right: 35px; } .target-option > input { top: 22px; } }

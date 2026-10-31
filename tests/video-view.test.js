@@ -52,3 +52,26 @@ test('a representative title never labels another untitled occurrence of the sam
   assert.equal(groups[0].title,'');
   assert.equal(groups[1].title,'広告');
 });
+
+test('real URL-less videos are recordable and proven URL groups reuse the same element reference',()=>{
+  const reference={elementTag:'VIDEO',videoRef:'stream',elementToken:'stream',frameToken:'frame',documentURL:'https://page.test',documentId:'doc',title:'Live video',playing:true};
+  const sources=[{url:'blob:https://page.test/source',occurrences:[{...reference,title:'Older label'}]}];
+  const groups=groupVideos(sources,[reference,{...reference,videoRef:'empty',elementToken:'empty',title:'No URL',playing:false}]);
+  assert.equal(groups.length,2);
+  assert.equal(groups[0].items.length,1);
+  assert.equal(groups[0].title,'Live video');
+  assert.equal(groups[0].source,reference);
+  assert.equal(groups[0].recordable,true);
+  assert.equal(groups[1].items.length,0);
+  assert.equal(groups[1].recordable,true);
+  assert.equal(groups[1].history,false);
+});
+
+test('a saved URL or player setting never enables video-only recording without a real current element',()=>{
+  const groups=groupVideos([
+    {url:'https://cdn.test/clip.mp4',occurrences:[{videoRef:'old',frameToken:'old-frame'}]},
+    {url:'https://cdn.test/config.mp4',occurrences:[{configRef:'player',frameToken:'frame'}]},
+  ],[{elementTag:'SCRIPT',videoRef:'script',elementToken:'script',frameToken:'frame',documentURL:'https://page.test'}]);
+  assert.equal(groups.length,2);
+  assert.ok(groups.every(group=>group.recordable===false));
+});

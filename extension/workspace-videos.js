@@ -5,8 +5,9 @@ import {originalExtension} from './output-format.js';
 
 export function renderVideoGroups({state,element,icon,statusElement,onSave,onRecord,onLocate,onFramePermission,onLocateFrame,formatOptions,formatValue,onFormatChange}) {
   const $=id=>document.getElementById(id), supported=item=>['direct','hls','dash','blob'].includes(item.type);
-  const groups=groupVideos(state.items), known=groups.filter(group=>group.linked).length;
-  const direct=state.items.filter(supported), other=state.items.filter(item=>!supported(item));
+  const groups=groupVideos(state.items,state.videoElements || []), known=groups.filter(group=>group.linked).length;
+  const direct=state.items.filter(supported);
+  const unsupported=groups.filter(group=>!group.recordable && !group.items.some(supported));
   $('count').textContent=`${known ? `${known}本の動画 · ` : ''}${direct.length}件の保存候補`;
   $('direct-list').replaceChildren();$('unsupported-list').replaceChildren();
   let videoNumber=0,formatIndex=0;
@@ -31,9 +32,15 @@ export function renderVideoGroups({state,element,icon,statusElement,onSave,onRec
     if(locatable && group.source.elementToken && group.source.frameToken) {
       const locate=element('button','secondary locate-source',group.source.videoRef ? '元ページで確認' : sourceTag==='A' ? '元リンクを確認' : '出典の場所を確認');
       locate.setAttribute('aria-label',`${name}の元ページの出典を確認`);
-      locate.addEventListener('click',()=>onLocate(group.items[0],group.source));heading.append(locate);
+      locate.addEventListener('click',()=>onLocate(group.items[0] || null,group.source));heading.append(locate);
+    }
+    if(group.recordable) {
+      const record=element('button','secondary record-video-button','この動画を録画');
+      record.setAttribute('aria-label',`${name}だけを録画`);
+      record.addEventListener('click',()=>onRecord(group.source));heading.append(record);
     }
     section.append(heading);
+    if(!group.items.length) section.append(element('p','hint','直接保存できる保存元は見つかりません。動画だけの録画を試せます。'));
     let alternatives;
     for(const [itemIndex,item] of group.items.entries()) {
       const card=element('article','video-card'),info=element('div','video-info');
@@ -63,7 +70,7 @@ export function renderVideoGroups({state,element,icon,statusElement,onSave,onRec
       button.dataset.displayName=name;
       button.append(icon(supported(item) ? 'download' : 'record'),document.createTextNode(supported(item) ? '保存' : '録画へ'));
       button.setAttribute('aria-label',`${name} · ${fileLabel(item.url)}${supported(item) ? 'を保存' : 'の録画設定へ'}`);
-      button.addEventListener('click',()=>supported(item) ? onSave(item) : onRecord());actions.append(button);
+      button.addEventListener('click',()=>supported(item) ? onSave(item) : onRecord(group.recordable ? group.source : undefined));actions.append(button);
       const result=element('div','candidate-result');result.dataset.url=item.url;actions.append(result);
       card.append(fileIcon,info,actions);
       if(itemIndex===0)section.append(card);
@@ -72,10 +79,10 @@ export function renderVideoGroups({state,element,icon,statusElement,onSave,onRec
         alternatives.append(card);
       }
     }
-    $(group.items.some(supported) ? 'direct-list' : 'unsupported-list').append(section);
+    $(group.recordable || group.items.some(supported) ? 'direct-list' : 'unsupported-list').append(section);
   }
-  $('empty').hidden=direct.length>0;$('record-fallback').hidden=!direct.length;
-  $('unsupported').hidden=!other.length;$('unsupported-count').textContent=`(${other.length}件)`;
+  $('empty').hidden=direct.length>0 || groups.some(group=>group.recordable);$('record-fallback').hidden=!direct.length;
+  $('unsupported').hidden=!unsupported.length;$('unsupported-count').textContent=`(${unsupported.reduce((count,group)=>count+group.items.length,0)}件)`;
   $('frame-sites').replaceChildren();$('frame-access').hidden=!(state.frames || []).length;
   for(const [index,frame] of (state.frames || []).entries()) {
     let origin;try{origin=originPattern(frame.url);}catch{continue;}

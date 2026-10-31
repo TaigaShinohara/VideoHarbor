@@ -21,6 +21,40 @@ function scan(t,doc) {
 }
 const bySuffix = (result,suffix) => result.items.find(item => item.url.endsWith(suffix));
 
+test('collector discovers real recording targets independently of media URLs and retains private source identity',t => {
+  const stream={synthetic:true};
+  const video=node('video',{'aria-label':'Live camera'},{srcObject:stream,currentSrc:'',videoWidth:640,videoHeight:360,readyState:4,paused:false,ended:false,duration:Infinity});
+  const empty=node('video',{'title':'Not yet loaded'},{readyState:0,paused:true});
+  const doc=documentFor([video,empty,node('meta',{property:'og:video',content:'/metadata.mp4'})]);
+  const output=scan(t,doc);
+  assert.equal(output.items.length,1,'URL-less elements must not become fake direct-save URLs');
+  assert.equal(output.videoElements.length,2);
+  const first=output.videoElements[0];
+  assert.equal(first.title,'Live camera');
+  assert.equal(first.width,640);assert.equal(first.height,360);assert.equal(first.readyState,4);
+  assert.equal(first.playing,true);assert.equal(first.paused,false);assert.equal(first.ended,false);
+  assert.equal(first.videoRef,first.elementToken);assert.equal(first.elementTag,'VIDEO');
+  assert.equal(first.duration,undefined,'an unbounded duration is not serialized');
+  assert.equal(first.srcObject,undefined);assert.equal(first.currentSrc,undefined,'media source identity stays in the source frame');
+  assert.equal(doc.__videoHarborDiscovery.elements.get(first.elementToken),video);
+  assert.equal(doc.__videoHarborDiscovery.videoSources.get(first.elementToken).srcObject,stream);
+  assert.equal(output.videoElements[1].paused,true);
+  const repeated=scan(t,doc);
+  assert.equal(repeated.videoElements[0].elementToken,first.elementToken,'rescanning the same element retains its token');
+});
+
+test('collector bounds recording targets independently and prioritizes a later playing video',t => {
+  const output=scan(t,documentFor([
+    ...Array.from({length:100},()=>node('video',{}, {paused:true,readyState:0})),
+    node('video',{'title':'Current video'}, {paused:false,readyState:4}),
+  ]));
+  assert.equal(output.items.length,0);
+  assert.equal(output.videoElements.length,100);
+  assert.ok(output.videoElements.some(video=>video.title==='Current video'));
+  assert.equal(document.__videoHarborDiscovery.videoSources.size,100);
+  assert.ok(output.notices.some(notice=>notice.includes('100')));
+});
+
 test('collector preserves blob currentSrc and independent original/lazy/source URLs',t => {
   const video = node('video',{'src':'original.mp4','data-src':'lazy.webm','data-hls':'stream.m3u8'},
     {currentSrc:'blob:https://page.test/live',videoWidth:1920,videoHeight:1080},[

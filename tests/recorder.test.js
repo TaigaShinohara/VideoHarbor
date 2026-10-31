@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { RecorderController } from '../extension/recorder.js';
+import { prepareVideoCapture } from '../extension/video-capture.js';
 
 class Track extends EventTarget {
   constructor(kind = 'video') { super(); this.kind = kind; this.readyState = 'live'; this.stops = 0; }
@@ -93,6 +94,7 @@ function harness(t, options = {}) {
   const controller = new RecorderController({ source: { tabId: 1, title: 'A:/test', url: 'https://example.test' },
     acquire: async (mode) => { calls.push(`acquire:${mode}`); return options.acquire ? options.acquire(mode) : { streamId: 'one-use' }; },
     release: async () => { calls.push('release'); releases++; },
+    prepareVideo: options.prepareVideo,
   });
   t.after(async () => {
     if (controller.busy) await controller.stop();
@@ -702,4 +704,114 @@ for (const output of ['memory', 'file']) test(`${output} recording excludes a lo
   if (output === 'file') assert.deepEqual(destination.calls, ['createWritable', 'write', 'close', 'getFile']);
   assert.ok(h.media.getTracks().every(track => track.readyState === 'ended'));
   assert.equal(h.controller.stream, null);assert.equal(h.releases(), 1);assert.equal(h.intervals.size, 0);
+});
+
+
+const videoReference = {elementToken:'video-1',frameToken:'document-1',documentURL:'https://example.test/',title:'選んだ動画'};
+class RemoteRecorder extends Recorder {
+  constructor(audio = true) {
+    super(null,{mimeType:'video/webm'}); this.audio=audio;this.target='選んだ動画';this.available=true;this.closed=0;
+  }
+  async start() { super.start(); }
+  async pause() { super.pause(); }
+  async resume() { super.resume(); }
+  async stop() { if(this.state!=='inactive')super.stop(); }
+  async close() { this.closed++;this.available=false; }
+}
+
+test('video capture uses the selected element without any tab or display capture, and preserves final data', async t=>{
+  const remote=new RemoteRecorder();let prepared;
+  const h=harness(t,{prepareVideo:async options=>{prepared=options;return remote;}});
+  assert.equal(await h.controller.start('video',true,'memory',videoReference),true);
+  assert.deepEqual(h.calls,['acquire:video']);
+  assert.equal(prepared.reference,videoReference);assert.equal(prepared.audio,true);
+  assert.equal(h.controller.stream,null);assert.equal(h.audioContexts(),0);
+  remote.chunk('selected');
+  assert.equal(await h.controller.pause(),true);assert.equal(h.controller.snapshot().phase,'paused');
+  assert.equal(await h.controller.resume(),true);assert.equal(h.controller.snapshot().phase,'recording');
+  await h.controller.stop();
+  assert.equal(await (await h.controller.getResultFile()).text(),'selectedfinal');
+  assert.equal(h.controller.snapshot().method,'video');assert.equal(remote.closed,1);assert.equal(h.releases(),1);
+});
+
+test('video with missing audio waits for a decision before recording and never switches to the tab', async t=>{
+  const remote=new RemoteRecorder(false),h=harness(t,{prepareVideo:async()=>remote});
+  const starting=h.controller.start('video',true,'memory',videoReference);await tick();
+  assert.equal(h.controller.snapshot().phase,'awaiting-audio-decision');assert.equal(remote.state,'inactive');
+  assert.equal(h.controller.continueWithoutAudio(),true);assert.equal(await starting,true);
+  assert.equal(h.controller.snapshot().audio,false);assert.deepEqual(h.calls,['acquire:video']);
+  await h.controller.stop();
+});
+
+test('cancelling delayed video preparation closes its late source without replacing the previous saved result', async t=>{
+  let resolve;const preparation=new Promise(r=>{resolve=r;});
+  const h=harness(t,{prepareVideo:()=>preparation});
+  await h.controller.start('display',false,'memory');await h.controller.stop();await h.controller.save();
+  const previous=await h.controller.getResultFile();
+  const starting=h.controller.start('video',false,'memory',videoReference);await tick();
+  await h.controller.cancelStart();assert.equal(await starting,false);
+  const remote=new RemoteRecorder(false);resolve(remote);await tick();
+  assert.equal(remote.closed,1);assert.equal(remote.state,'inactive');
+  assert.equal(await h.controller.getResultFile(),previous);assert.equal(h.controller.snapshot().phase,'saved');
+});
+
+test('video source failure retains received data as unverified recovery and releases the owner', async t=>{
+  const remote=new RemoteRecorder(),h=harness(t,{prepareVideo:async()=>remote});
+  await h.controller.start('video',true,'memory',videoReference);remote.chunk('received');
+  remote.dispatchEvent(new Event('error'));await h.controller.stop();
+  assert.equal(h.controller.snapshot().phase,'error');assert.equal(h.controller.snapshot().resultReady,true);
+  assert.match(h.controller.snapshot().message,/再生できるかは未確認/);assert.equal(remote.closed,1);assert.equal(h.releases(),1);
+});
+
+test('video reference and preparation failure never fall back to whole-tab capture', async t=>{
+  const h=harness(t,{prepareVideo:async()=>{throw new DOMException('blocked','SecurityError');}});
+  assert.equal(await h.controller.start('video',true,'memory'),false);assert.deepEqual(h.calls,[]);
+  assert.equal(await h.controller.start('video',true,'memory',videoReference),false);
+  assert.deepEqual(h.calls,['acquire:video','release']);assert.equal(h.controller.snapshot().phase,'error');
+});
+
+
+test('source disappearance settles a pending video audio decision and retains the unused file destination', async t=>{
+  const remote=new RemoteRecorder(false),h=harness(t,{prepareVideo:async()=>remote,picker:async()=>({name:'unused.webm',createWritable:()=>{throw new Error('must not write');}})});
+  await h.controller.chooseFile();
+  const starting=h.controller.start('video',true,'file',videoReference);await tick();
+  assert.equal(h.controller.snapshot().phase,'awaiting-audio-decision');
+  remote.available=false;remote.dispatchEvent(new Event('error'));
+  assert.equal(await starting,false);assert.equal(h.controller.snapshot().diskChosen,true);
+  assert.match(h.controller.snapshot().message,/動画の取得が終了/);assert.equal(remote.closed,1);assert.equal(h.releases(),1);
+});
+
+test('real video adapter propagates a preparation-time connection loss through the audio decision and releases the lock', {timeout:3000}, async t=>{
+  let disconnect;
+  const lost=new Promise((_,reject)=>{disconnect=()=>reject(new Error('接続が終了しました。'));});
+  let polled;
+  const polling=new Promise(resolve=>{polled=resolve;});
+  const h=harness(t,{prepareVideo:options=>prepareVideoCapture({...options,send:async(_type,{command})=>{
+    if(command==='prepare')return {available:true,audio:false,state:'inactive',target:'選んだ動画',mimeType:'video/webm'};
+    if(command==='poll'){polled();return lost;}
+    if(command==='close')return {closed:true};
+    throw new Error('Recording must not start before the audio decision');
+  }})});
+  const starting=h.controller.start('video',true,'memory',videoReference);
+  await polling;
+  assert.equal(h.controller.snapshot().phase,'awaiting-audio-decision');
+  disconnect();
+  assert.equal(await starting,false);
+  assert.equal(h.controller.snapshot().phase,'idle');assert.equal(h.releases(),1);
+  assert.match(h.controller.snapshot().message,/動画の取得が終了/);
+});
+
+test('video file output waits for the final remote data and closes only after ordered writes', async t=>{
+  const remote=new RemoteRecorder();const writes=[];let unblock;
+  const blocked=new Promise(resolve=>{unblock=resolve;});let closed=false;
+  const h=harness(t,{prepareVideo:async()=>remote,picker:async()=>({name:'selected.webm',createWritable:async()=>({
+    async write(blob){const text=await blob.text();writes.push(text);if(text==='first')await blocked;},
+    async close(){closed=true;},async abort(){throw new Error('Successful output must not abort');},
+  })})});
+  await h.controller.chooseFile();await h.controller.start('video',true,'file',videoReference);remote.chunk('first');
+  const stopping=h.controller.stop();await tick();
+  assert.equal(h.controller.snapshot().phase,'finalizing');assert.equal(closed,false);assert.deepEqual(writes,['first']);
+  unblock();await stopping;
+  assert.deepEqual(writes,['first','final']);assert.equal(closed,true);assert.equal(h.controller.snapshot().phase,'saved');
+  assert.equal(h.controller.snapshot().resultSaved,true);assert.equal(remote.closed,1);assert.equal(h.releases(),1);
 });

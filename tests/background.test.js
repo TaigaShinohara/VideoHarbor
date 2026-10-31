@@ -423,3 +423,44 @@ test('BG-format: actual native MP4/M4V complete normally and auto accepts other 
     assert.equal(response.data.jobs[0].error,undefined);assert.equal(h.requested.length,0);
   }
 });
+
+
+const videoRef={elementTag:'VIDEO',elementToken:'video-selected',videoRef:'video-selected',frameToken:'frame-selected',frameId:2,documentId:'source-document',documentURL:'https://embed.test/',title:'Trusted title'};
+const videoToken='00000000-0000-4000-8000-000000000001';
+
+test('video control binds the workspace lock to the exact discovered frame, document and element',async t=>{
+  const h=await browser(t);h.state.videoElements=[videoRef];h.persist();
+  assert.equal((await h.send({type:'capture',mode:'video'})).ok,true);
+  h.setScriptResults([{frameId:2,documentId:'source-document',result:{available:true,audio:true,state:'inactive'}}]);
+  const response=await h.send({type:'video-control',command:'prepare',token:videoToken,reference:{...videoRef,title:'Untrusted replacement'},mimeType:'video/webm',audio:true});
+  assert.equal(response.ok,true);assert.equal(response.data.available,true);
+  const script=h.scripts.at(-1);assert.equal(script.func.name,'controlPageVideo');assert.deepEqual(script.target,{tabId:1,documentIds:['source-document']});
+  assert.equal(script.args[0].reference.title,'Trusted title');assert.equal(h.store.get('captureLock').videoToken,videoToken);
+  const before=h.scripts.length;
+  for(const message of [
+    {instance:'wrong-owner'},
+    {reference:{...videoRef,documentId:'other-document'}},
+    {reference:{...videoRef,elementToken:'other-video'}},
+    {token:'00000000-0000-4000-8000-000000000002'},
+  ])assert.equal((await h.send({type:'video-control',command:'poll',token:videoToken,reference:videoRef,ack:0,...message})).ok,false);
+  assert.equal(h.scripts.length,before,'invalid references and owners never reach the source document');
+});
+
+test('video control refuses navigation and hides URLs from injection failures',async t=>{
+  const h=await browser(t);h.state.videoElements=[videoRef];h.persist();await h.send({type:'capture',mode:'video'});
+  h.failScript(new Error('Cannot access https://private.invalid/?token=secret'));
+  let response=await h.send({type:'video-control',command:'prepare',token:videoToken,reference:videoRef,mimeType:'video/webm'});
+  assert.equal(response.ok,false);assert.doesNotMatch(response.error,/private|secret|https/);
+  h.tabs.get(1).url='https://different.test/';
+  response=await h.send({type:'video-control',command:'poll',token:videoToken,reference:videoRef,ack:0});
+  assert.equal(response.ok,false);assert.match(response.error,/閉じられたか移動/);
+});
+
+test('locate-video accepts only a current real element and works without a recording lock',async t=>{
+  const h=await browser(t);h.state.videoElements=[videoRef];h.persist();
+  h.setScriptResults([{frameId:2,documentId:'source-document',result:{found:true}}]);
+  assert.equal((await h.send({type:'locate-video',reference:videoRef})).ok,true);
+  assert.deepEqual(h.scripts.at(-1).target,{tabId:1,documentIds:['source-document']});
+  assert.equal(h.tabs.get(1).active,true);
+  assert.equal((await h.send({type:'locate-video',reference:{...videoRef,elementToken:'metadata-only'}})).ok,false);
+});
