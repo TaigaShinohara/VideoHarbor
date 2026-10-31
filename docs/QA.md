@@ -11,6 +11,7 @@
 - 同追加試験で、ローカルffmpegが生成した4秒の映像＋音声付きHLSを、本物の拡張fetch→HLS組立→ChromeダウンロードでTSとfMP4へ実保存。実Chrome downloadのcomplete/exists/filenameを確認後、ffprobeで形式・両track・長さを確認し、ffmpegの`-xerror -err_detect explode`で両trackを全編デコードして終了コード0。元ページで生成したMP4 Blobも同経路で転送・実保存・全編デコード成功。MSE用blobは理由を表示しダウンロードを開始しない。
 - 同追加試験でHLS区間の応答を遅延させ、360×800で候補一覧を別位置へスクロールしても固定の停止ボタンがviewport内にあること、停止後は中断表示になり新しいdownloadや部分ファイルを保存しないことを確認。
 - サイト許可の拒否/再試行とrequest時userActivationは、permissions APIの確認境界だけを差し替えて確認。fetch・collector・HLS組立・blob転送・実downloadは差し替えていない。配布manifestは必須host権限なし。テストコピーだけに必要なlocalhostホストを付与し、ワイルドカードhostを実付与していない。個人プロファイルや通常Chromeには触れていない。
+- マスターから取得したHLSと単独の子リストを区別し、単独リストの取得中・保存結果では別音声を判別できないことを表示する。子リストだけでは音声なしが意図的か外部音声の取りこぼしかを区別できない。マスターで別配信が判明した場合の拒否とは分ける。
 - 最初の追加試験は、拡張起点downloadとPlaywrightのartifactコピーが競合してENOENT。Chrome自身のdownload ID・実状態・ファイル名で確認する方式へ試験を修正し、再実行でPASS。製品の保存失敗とは区別する。
 
 未確認：ネイティブの追加サイト権限ダイアログの本人操作、実サイトでの改修後追試・サイト別の認証/Referer/期限付きURL/リダイレクト互換性、最大容量や長時間の実測、本人の新しい保存操作の理解、実OS picker/音声/スクリーンリーダー。DASH、暗号化・ライブ・映像音声別配信HLS、任意のMSE分割配信、DRM回避、変換は未対応。合成試験を全サイト対応・人間の体験・Chrome116実機確認と混同しない。

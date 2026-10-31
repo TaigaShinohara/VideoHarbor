@@ -210,6 +210,7 @@ export async function prepareHLS(url, fetchResource, { signal } = {}) {
     if (!master) {
       if (result.lines.some(line => MASTER_TAGS.has(tagOf(line)))) throw error('通常の動画を含まないHLS配信リストです。');
       const plan = parseMedia(result.lines, result.url);
+      plan.fromMaster = Boolean(selected);
       if (selected) { plan.bandwidth = Number(selected.BANDWIDTH); if (selected.RESOLUTION) plan.resolution = selected.RESOLUTION; }
       return plan;
     }

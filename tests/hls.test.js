@@ -34,6 +34,7 @@ test('HLS: finite TS playlists resolve relative URLs and assemble bytes in playl
   const plan = await prepareHLS(base, h.fetch);
   assert.equal(plan.extension, 'ts'); assert.equal(plan.mime, 'video/mp2t'); assert.equal(plan.duration, 3.5);
   assert.equal(plan.playlistURL, base);
+  assert.equal(plan.fromMaster, false);
   const progress = [];
   const blob = await downloadHLS(plan, h.fetch, { onProgress: value => progress.push(value) });
   assert.equal(blob.type, 'video/mp2t'); assert.equal(blob.size, 376);
@@ -50,6 +51,7 @@ test('HLS: selects highest bandwidth self-contained variant, preserving commas i
   const plan = await prepareHLS(base, h.fetch);
   assert.equal(plan.bandwidth, 2000); assert.equal(plan.resolution, '1280x720');
   assert.equal(plan.playlistURL, 'https://media.test/path/high.m3u8');
+  assert.equal(plan.fromMaster, true);
   assert.equal(h.calls.length, 2);
 });
 

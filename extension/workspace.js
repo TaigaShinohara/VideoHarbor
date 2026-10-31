@@ -141,7 +141,7 @@ function renderVideos() {
     const details=element('details','url-detail'), summary=element('summary','','詳細');
     details.append(summary,element('p','meta',item.url.length>500 ? item.url.slice(0,500)+'…' : item.url));info.append(details);
     const sites=element('p','hint permission-sites');sites.dataset.url=item.url;sites.hidden=true;info.append(sites);
-    if(item.type==='hls')info.append(element('p','hint','HLSをファイルにまとめて保存 · 最大256 MiB'));
+    if(item.type==='hls')info.append(element('p','hint','HLSをファイルにまとめて保存 · 最大256 MiB · 単独リストでは別音声を判別できません'));
     if(item.type==='blob')info.append(element('p','hint','元ファイル型のページ内動画を取得 · 分割再生用blobは未対応'));
     const button=element('button',supported(item) ? `primary ${item.type==='direct' ? 'direct-save' : 'media-save'}` : 'secondary');
     button.dataset.url=item.url;
