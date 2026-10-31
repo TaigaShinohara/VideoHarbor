@@ -46,7 +46,7 @@ try {
   const [manager]=await Promise.all([context.waitForEvent('page'),worker.evaluate(tab=>globalThis.__openWorkspace(tab),tab)]);
   await manager.waitForLoadState();
   const errors=[];manager.on('pageerror',e=>errors.push(e.message));
-  await manager.waitForFunction(()=>document.querySelector('#message').textContent.includes('候補を取得'));
+  await manager.waitForFunction(()=>document.querySelector('#count').textContent && !document.querySelector('#scan').disabled);
   const downloadFolder=join(scratch,'downloads');await mkdir(downloadFolder);
   const session=await context.newCDPSession(manager);await session.send('Browser.setDownloadBehavior',{behavior:'allow',downloadPath:downloadFolder,eventsEnabled:true});
   if(manifest.name==='ImageCrate') {
@@ -360,7 +360,7 @@ try {
     const emptyTab=await worker.evaluate(async url=>(await chrome.tabs.query({})).find(t=>t.url===url),origin+'/empty');
     const [emptyManager]=await Promise.all([context.waitForEvent('page'),worker.evaluate(tab=>globalThis.__openWorkspace(tab),emptyTab)]);
     await emptyManager.waitForLoadState();emptyManager.on('pageerror',e=>errors.push(e.message));
-    await emptyManager.waitForFunction(()=>document.querySelector('#message').textContent==='0件の候補を取得しました。');
+    await emptyManager.waitForFunction(()=>!document.querySelector('#empty').hidden && !document.querySelector('#scan').disabled);
     assert.equal(await emptyManager.locator('#empty').isVisible(),true);
     assert.equal(await emptyManager.locator('.direct-save').count(),0);
     await emptyManager.locator('#empty-scan').click();

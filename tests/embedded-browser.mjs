@@ -97,7 +97,7 @@ async function openFixture(profile,manifest,origin) {
   assert.ok(tab,'source fixture tab exists');
   const [manager]=await Promise.all([context.waitForEvent('page'),worker.evaluate(tab=>globalThis.__openWorkspace(tab),tab)]);
   manager.on('pageerror',e=>errors.push(e.message));
-  await manager.waitForFunction(()=>document.querySelector('#message').textContent.includes('候補を取得'));
+  await manager.waitForFunction(()=>document.querySelector('#count').textContent && !document.querySelector('#scan').disabled);
   const session=await context.newCDPSession(manager);
   const {targetInfo}=await session.send('Target.getTargetInfo');
   // Chrome 116 exposes an ID for the default persistent context that this CDP

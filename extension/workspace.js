@@ -122,7 +122,6 @@ function updateOutputResults() {
     if(container.dataset.resultKey===key)continue;
     container.dataset.resultKey=key;container.replaceChildren();
     if(key) {
-      const name=outputName(job);if(name)container.append(element('span','',name));
       if(Number.isSafeInteger(job.downloadId))container.append(outputFolderButton(job.downloadId));
       if(job.exists===false || job.resultUnavailable)container.append(element('span','hint','保存先で見つからない可能性があります。'));
     }
@@ -228,7 +227,7 @@ async function scan() {
   if(isBusy() || recorder?.busy) return;
   const fromEmpty=document.activeElement===$('empty-scan');
   loading=true;clearError();updateSummary();$('message').textContent='ページから候補を探しています…';
-  try { applyState(await send('scan'));render();$('message').textContent=`${state.items.length}件の候補を取得しました。`;return true; }
+  try { applyState(await send('scan'));render();$('message').textContent='';return true; }
   catch(e){error(e);$('message').textContent='取得できませんでした。元ページからやり直せます。';return false;}
   finally {
     loading=false;updateSummary();
@@ -347,7 +346,7 @@ function updateRecording(s) {
   previousRecordingPhase=s.phase;
   updateSummary();
 }
-$('source').addEventListener('click',()=>send('source').catch(error));$('scan').addEventListener('click',scan);
+$('scan').addEventListener('click',scan);
 $('retry').addEventListener('click',()=>jobAction('retry'));$('cancel').addEventListener('click',()=>jobAction('cancel'));
 $('media-cancel').addEventListener('click',()=>mediaSaver.cancel());
 if(KIND === 'images') {

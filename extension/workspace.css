@@ -53,6 +53,7 @@ button.small { min-height: 36px; padding: 7px 11px; font-size: .82rem; }
 .source-line .text-button { flex-shrink: 0; font-size: .79rem; }
 .source-line .icon { width: 16px; height: 16px; }
 .scan-status { min-height: 20px; margin: 8px 0 24px; color: var(--muted); font-size: .78rem; }
+.scan-status:empty { min-height: 0; margin-top: 0; }
 .scanning #scan .icon { animation: spin 1s linear infinite; }
 .notice, .error { margin: 12px 0 20px; border: 1px solid #e4d7ae; border-left: 3px solid #a38228; border-radius: 9px; padding: 12px 15px; background: #fff9e9; color: #6f5927; font-size: .85rem; overflow-wrap: anywhere; }
 .error { border-color: #e0b9bb; border-left-color: var(--danger); background: #fff1ef; color: #8f3137; }

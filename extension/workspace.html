@@ -6,7 +6,7 @@
     <div class="brand"><span class="brand-icon"><svg class="icon" aria-hidden="true"><use href="icons.svg#play"></use></svg></span><h1>VideoHarbor</h1></div>
     <button id="scan" class="secondary"><svg class="icon" aria-hidden="true"><use href="icons.svg#refresh"></use></svg>再スキャン</button>
   </header>
-  <div class="source-line"><div class="source-info"><span class="source-caption">取得元</span><strong id="source-title">読み込み中…</strong><span id="source-domain"></span></div><button id="source" class="text-button" aria-label="元ページを開く"><span>元ページ</span><svg class="icon" aria-hidden="true"><use href="icons.svg#external"></use></svg></button></div>
+  <div class="source-line"><div class="source-info"><span class="source-caption">取得元</span><strong id="source-title">読み込み中…</strong><span id="source-domain"></span></div></div>
   <p id="message" class="scan-status" role="status" aria-live="polite">ページを確認しています。</p>
   <p id="error" class="error" role="alert" hidden></p><div id="notices" class="notice" hidden></div>
   <nav class="tabs" role="tablist" aria-label="保存方法">
@@ -14,7 +14,7 @@
     <button id="record-tab" role="tab" aria-selected="false" aria-controls="record-view" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="icons.svg#record"></use></svg>画面を録画</button>
   </nav>
   <section id="download-view" class="view" role="tabpanel" aria-labelledby="download-tab">
-    <div class="section-heading"><div><h2 tabindex="-1" id="download-heading">動画を選んで保存</h2><p>保存形式を選んで、動画をファイルに。</p></div><span id="count" class="count"></span></div>
+    <div class="section-heading"><div><h2 tabindex="-1" id="download-heading">動画を選んで保存</h2></div><span id="count" class="count"></span></div>
     <div id="direct-list" class="video-list"></div>
     <div id="media-panel" class="footer" hidden><p id="media-status" role="status" aria-live="polite"></p><span id="media-progress"></span><button id="media-cancel" class="secondary">保存を停止</button></div>
     <details class="disclosure"><summary>保存形式・埋め込み動画について</summary><p class="hint">各動画の「保存形式」でMP4または元の形式を選べます。対応する動画はMP4が初期選択です。HLSの対応するTS映像・音声は、再圧縮せずMP4へまとめ直します。WebMなど未対応形式からのMP4変換は選べません。</p><p class="hint">通常の動画ファイルと、暗号化されていない終了済みHLS・DASHを保存できます。対応する最高帯域の映像と標準音声を選び、MP4の別配信なら一つのMP4へまとめます。元の形式でTSを保存するときは対応プレーヤーで再生してください。</p><p class="hint">ライブ・暗号化・DRM、TS/AACの別音声、DASHの一部構成には未対応です。単独のHLSリストでは別音声の有無を判別できません。保存後に音声も確認してください。映像と音声を合わせて最大256 MiBです。処理中はこの作業タブを閉じないでください。</p><p class="hint">必要な場合だけ配信元サイトへのアクセス許可を求めます。許可はChromeの拡張機能設定から解除できます。</p></details>
