@@ -86,9 +86,13 @@ try {
     const sameName=manager.locator('#direct-list .video-card').filter({hasText:'clip.webm'});
     assert.equal(await sameName.count(),2,'distinct URLs can have the same file name');
     for(const card of await sameName.all()) {
-      assert.equal(await card.locator('.video-info > .meta').isVisible(),true,'candidate metadata remains visible outside details');
-      assert.match(await card.locator('.video-info > .meta').textContent(),/WEBM.*127\.0\.0\.1/);
-      assert.equal(await card.locator('details').getAttribute('open'),null);
+      const details=card.locator('.url-detail'),metadata=details.locator('.meta').first();
+      assert.equal(await details.getAttribute('open'),null);
+      assert.equal(await metadata.isVisible(),false,'candidate metadata is initially collapsed in details');
+      await details.locator('summary').click();
+      assert.equal(await metadata.isVisible(),true,'opening details reveals candidate metadata');
+      assert.match(await metadata.textContent(),/WEBM.*127\.0\.0\.1/);
+      await details.locator('summary').click();
     }
     await screenshots('download');
     const blueGroup=manager.locator('.video-group').filter({has:manager.getByRole('heading',{name:'青いカップ',exact:true})});

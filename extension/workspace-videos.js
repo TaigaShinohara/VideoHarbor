@@ -41,8 +41,8 @@ export function renderVideoGroups({state,element,icon,statusElement,onSave,onRec
       const fileIcon=element('div','file-icon');fileIcon.setAttribute('aria-hidden','true');fileIcon.append(icon('file'),element('span','',format));
       info.append(element('h4','file-name',fileLabel(item.url)));
       let host='ページ内データ';try{host=new URL(item.url).hostname || host;}catch{}
-      info.append(element('p','meta',`${format} · ${host}${item.width && item.height ? ` · ${item.width} × ${item.height}` : ''}`),statusElement(item));
-      const details=element('details','url-detail');details.append(element('summary','','詳細'),element('p','meta',item.url.length>500 ? item.url.slice(0,500)+'…' : item.url));
+      info.append(statusElement(item));
+      const details=element('details','url-detail');details.append(element('summary','','詳細'),element('p','meta',`${format} · ${host}${item.width && item.height ? ` · ${item.width} × ${item.height}` : ''}`),element('p','meta',item.url.length>500 ? item.url.slice(0,500)+'…' : item.url));
       const notes={hls:'HLSをファイルにまとめます。単独リストでは別配信の音声を判別できません。',dash:'DASHの映像・音声を対応するMP4にまとめます。',blob:'元ファイル型のページ内動画を取得します。分割再生用blobは未対応です。'};
       if(notes[item.type])details.append(element('p','hint',`${notes[item.type]} 最大256 MiB。`));
       info.append(details);
