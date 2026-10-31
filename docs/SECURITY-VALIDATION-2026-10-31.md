@@ -27,9 +27,13 @@
 | 実ブラウザ全経路 | npm run test:browser / test:embedded | Chrome156.0.8078.79とCfT116.0.5845.96で双方PASS。実MP4/TS/TS→MP4/fMP4/DASH/別音声HLS/blobの保存、映像・音声track/packet時刻/全編decode、frame/document、worker再起動後session復帰を確認 |
 | 実module Worker | npm run test:worker | Chrome156/116とも3endpoint成功、H.264/AAC全編decode、buffer所有権、malformed3種、取消/timeout、10回反復後worker残0。各環境で起動18件/終了後0件 |
 | 通信/認証/redirect | npm run test:security | Chrome116/156でPASS。下記の送信境界を実HTTP/HTTPSで確認 |
-| 実時間30分/背景 | npm run test:endurance | 実行中。終了後に実時間、bytes、track/lock解放、全編decodeを確定する |
+| 実時間30分/背景 | npm run test:endurance / Chrome156.0.8078.79 | PASS。active1,800,375ms、wall1,803,301ms、pause2,209msを除外して本番30分上限で自動停止。実WebM29,578,985 bytes、映像終端1,799.495秒、映像/音声あり・全編decode成功。全track停止・lock解放・結果破棄を確認。Chrome116の30分実時間試験は未実施 |
 
 Worker取消の確定的なbusy状態には、一時copy内だけのpre-parse barrierを使う。実WorkerとUI heartbeat、abort/terminate発行、返答不採用、Worker終了を試すためのhookであり、製品parserの処理時間実測とは区別する。成功・不正入力の解析と実メディア出力は製品endpointを使う。Chrome116ではCDPのTarget.getTargetsがdedicated Workerを列挙しなかったため、Playwrightが捉える実Workerの存在と終了後0件を確認した。
+
+30分試験の開始後、独立レビューでvisibilityのassert不足を見つけ、試験ソースへ開始時と各記録中snapshotのhidden必須判定を追加した。今回のrunは変更前のロード済み試験コードを使ったため、開始時・毎分・停止時のログを別に照合した。開始時とminute0〜30の31件がすべてhiddenで、sample間隔59〜60秒、最終backgroundVisibilityConfirmed=trueを確認してPASS。今回の背景状態の証拠はそのsampleであり、追加した毎秒assertを実行済みとは扱わない。製品の時計・停止上限・録画処理は変更していない。
+
+実時間試験はJST13:24:06.209〜13:54:12.237。RecorderControllerがtrackを停止した後にfixtureの音源を閉じたことを確認し、cleanupで先にtrackを止めて成功とする試験ではない。capture入力とlockの取得/解放相手は合成で、native capture・実音声・実保存pickerの検証とは分ける。終了コード0で自身の隔離Chrome/profileと一時メディアを解放した。独立差分レビューの試験判定不足はソース上の解消を再確認済みで、追加の製品P1/P2は見つかっていない。
 
 ## parserの資源実測
 
@@ -84,6 +88,6 @@ Google公式[Chrome for Testing milestones](https://googlechromelabs.github.io/c
 
 - PR #11: MP4/HLS計算量とmetadata、merge `44a35f23556837398186dfa3f0518db016267154`。
 - PR #12: Workerとoperation取消、merge `e0f8d7216d490571f23d1654eecd0e483acb963f`。
-- 第3段階: Chrome116の状態保持、追加QA・境界検証と文書。最終commit/PRはマージ後の記録を参照する。
+- [PR #13](https://github.com/TaigaShinohara/VideoHarbor/pull/13): Chrome116の状態保持、追加QA・境界検証と文書。マージ結果と最終commitはPRの記録を参照する。
 - 元P2は、同じ攻撃構造の受理/正しい拒否、合法入力、実Worker/実保存の再検証で確認する。文書を追加しただけで修正済みとは扱わない。
 

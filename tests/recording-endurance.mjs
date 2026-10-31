@@ -109,6 +109,7 @@ try {
   const initial=await manager.evaluate(()=>enduranceSnapshot());
   assert.equal(selection.currentActive,false,'the recording tab is not the selected tab');
   assert.equal(selection.activeCount,1);assert.notEqual(selection.currentId,selection.activeId);
+  assert.equal(initial.visibility,'hidden','the recording tab starts genuinely hidden');
   assert.equal(initial.snapshot.audio,true,'the real recorder receives synthetic audio and video tracks');
   console.log(JSON.stringify({suite:'VideoHarbor recording endurance',stage:'started',browser:context.browser().version(),startedAt,
     activeLimitMs:ACTIVE_LIMIT,pauseWallMs:Math.round(pauseWall),background:true,visibility:initial.visibility,
@@ -117,6 +118,7 @@ try {
   while(performance.now()-started<DEADLINE-30000) {
     if(interrupted)throw new Error('Endurance test interrupted or exceeded its deadline');
     const state=await manager.evaluate(()=>enduranceSnapshot());
+    if(['recording','paused','finalizing'].includes(state.snapshot.phase))assert.equal(state.visibility,'hidden','the recording tab stays hidden during capture');
     const minute=Math.floor(state.snapshot.elapsed/60000);
     if(minute!==previousMinute) {
       previousMinute=minute;
