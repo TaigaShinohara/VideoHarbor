@@ -74,6 +74,7 @@ async function saveAndDecode(manager,url,name,format) {
   const previous=await manager.evaluate(async()=> (await chrome.downloads.search({})).map(item=>item.id));
   await mediaButton(manager,url).click();
   await waitStatus(manager,url,'complete');
+  if(url.endsWith('.m3u8'))assert.match(await mediaStatus(manager,url).textContent(),/音声の有無は未確認/,'standalone HLS file completion does not claim verified audio');
   const saved=await manager.evaluate(async previous=>(await chrome.downloads.search({})).find(item=>!previous.includes(item.id)),previous);
   assert.ok(saved,'the save started a real Chrome download');
   assert.equal(saved.state,'complete','Chrome completed the actual download');

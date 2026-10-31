@@ -97,6 +97,12 @@ test('HLS permission retry grants only encountered origins and completes a finit
   assert.deepEqual([...h.granted].sort(),['https://cdn.test/*','https://segments.test/*']);
   assert.match(h.calls.find(call=>call[0]==='download')[1].filename,/\.ts$/);
   assert.equal(h.saver.status(item.url).bytesReceived,188);
+  assert.match(h.saver.status(item.url).message,/音声の有無は未確認/);
+  h.state='interrupted';await h.saver.start(item,'Title');
+  const fetchesBeforeRetry=h.calls.filter(call=>call[0]==='fetch').length;
+  h.state='complete';await h.saver.start(item,'Title');
+  assert.equal(h.calls.filter(call=>call[0]==='fetch').length,fetchesBeforeRetry);
+  assert.match(h.saver.status(item.url).message,/音声の有無は未確認/,'retry keeps the audio-context limitation');
 });
 
 test('download interruption retains one reusable buffer and retry does not reread page data',async t=>{

@@ -45,7 +45,7 @@ export class MediaSaver {
   }
   async run(item,title,permission,previous) {
     let objectURL,blobToken;
-    const result={status:'preparing',message:'動画の配信情報を確認しています。',bytesReceived:0};
+    const result={status:'preparing',message:'動画の配信情報を確認しています。',bytesReceived:0,audioUnverified:Boolean(previous?.audioUnverified)};
     this.results.set(item.url,result);this.emit();
     try {
       if(!await permission)throw new Error('配信元へのアクセスは許可されませんでした。もう一度「保存」から試せます。');
@@ -56,7 +56,8 @@ export class MediaSaver {
         const plan=await prepareHLS(item.url,this.fetchResource.bind(this),{signal});
         const missing=await this.missing(plan.segments.map(s=>s.url));
         if(missing.length)throw new SitePermissionError(missing);
-        result.status='fetching';result.message='分割された動画を取得しています。';this.emit();
+        result.audioUnverified=!plan.fromMaster;
+        result.status='fetching';result.message=result.audioUnverified ? '単独のHLSリストを取得中。別配信の音声を判別できないため、音声を含まない場合があります。' : '分割された動画を取得しています。';this.emit();
         blob=await downloadHLS(plan,this.fetchResource.bind(this),{signal,onProgress:progress=>{
           Object.assign(result,progress);this.emit();
         }});
@@ -84,7 +85,7 @@ export class MediaSaver {
       // The user may cancel while Chrome is accepting the download.
       if(signal.aborted)await chrome.downloads.cancel(this.downloadId).catch(()=>{});
       await this.waitForDownload(this.downloadId);
-      result.status='complete';result.message=`保存完了 · ${extension.toUpperCase()}`;delete result.blob;
+      result.status='complete';result.message=`保存完了 · ${extension.toUpperCase()}${result.audioUnverified ? ' · 音声の有無は未確認' : ''}`;delete result.blob;
     } catch(error) {
       result.status=error.origins ? 'permission' : 'interrupted';
       result.origins=error.origins;
