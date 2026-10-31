@@ -75,6 +75,54 @@ test('collector discovers typed links, object/embed, player data and loaded vide
   assert.ok(!result.items.some(item => /session|watch|image.jpg/.test(item.url)));
 });
 
+test('collector excludes image resources attributed to video without matching images in video queries or directories',t => {
+  const extensions=['jpg','jpeg','png','gif','webp','avif','svg','bmp','ico','tif','tiff','heic','heif','jfif'];
+  const videos=['https://cdn.test/playback?poster=cover.jpg','https://cdn.test/poster.jpg/movie.mp4?thumbnail=cover.png'];
+  const resources=[
+    ...extensions.map(extension=>({name:`https://cdn.test/cover.${extension.toUpperCase()}?size=160#preview`,initiatorType:'video'})),
+    {name:'https://cdn.test/cover%2E%6A%70%67?size=160',initiatorType:'video'},
+    ...videos.map(name=>({name,initiatorType:'video'})),
+  ];
+  const result=scan(t,documentFor([],resources));
+  assert.deepEqual(result.items.map(item=>item.url),videos);
+  assert.ok(result.items.every(item=>item.mediaHint));
+});
+
+test('collector rejects explicit image MIME even for extensionless or video-shaped URLs and preserves video blobs',t => {
+  const result=scan(t,documentFor([
+    node('video',{src:'/image-endpoint',type:'image/png'}),
+    node('a',{href:'/image.mp4',type:'IMAGE/JPEG; charset=binary'}),
+    node('video',{}, {},[node('source',{src:'/source-endpoint',type:'image/webp'})]),
+    node('video',{src:'/movie.mp4'},{currentSrc:'blob:https://page.test/actual-video'}),
+  ]));
+  assert.deepEqual(result.items.map(item=>item.url),['blob:https://page.test/actual-video','https://page.test/movie.mp4']);
+});
+
+test('collector respects image MIME from JSON media fields, structured metadata and Open Graph',t => {
+  const result=scan(t,documentFor([
+    node('script',{type:'application/ld+json'},{textContent:JSON.stringify({
+      '@graph':[
+        {'@type':'VideoObject',contentUrl:'/structured-poster',encodingFormat:'image/jpeg'},
+        {file:'/config-image.mp4',type:'image/png'},
+        {video_url:'/field-poster',mimeType:'image/webp'},
+        {mp4:'/typed-poster',type:'image/avif'},
+        {file:'/actual.mp4',type:'video/mp4'},
+      ],
+    })}),
+    node('meta',{property:'og:video',content:'/og-image.mp4'}),
+    node('meta',{property:'og:video:type',content:'image/png'}),
+  ]));
+  assert.deepEqual(result.items.map(item=>item.url),['https://page.test/actual.mp4']);
+});
+
+test('video poster resources do not fill the candidate budget before a real loaded video',t => {
+  const resources=Array.from({length:501},(_,index)=>({name:`https://cdn.test/poster${index}.jpg`,initiatorType:'video'}));
+  resources.push({name:'https://cdn.test/playback',initiatorType:'video'});
+  const result=scan(t,documentFor([],resources));
+  assert.deepEqual(result.items.map(item=>item.url),['https://cdn.test/playback']);
+  assert.ok(!result.notices.some(notice=>notice.includes('500')));
+});
+
 test('collector leaves each iframe document to its own injection and walks open shadow content',t => {
   const child = documentFor([node('video',{src:'https://frame.test/frame.mp4'})]);
   const inaccessible = node('iframe',{src:'https://other.test/player?video=123'},{get contentDocument() { return null; }});

@@ -57,6 +57,10 @@ export function collect(previousURLs = []) {
       const u = new URL(decodeHTML(raw), base); u.hash = '';
       const url = u.href;
       if (u.username || u.password || u.hostname.includes('*') || url.length > 131072 || !/^https?:$|^blob:$/.test(u.protocol)) return;
+      // Keep this guard self-contained: Chrome injects collect without module helpers.
+      let path = u.pathname;
+      try { path = decodeURIComponent(path); } catch { /* Use the literal path for malformed encoding. */ }
+      if (/^image\//i.test((metadata.mime || '').trim()) || (/^https?:$/.test(u.protocol) && /\.(avif|bmp|gif|heic|heif|ico|jpe?g|jfif|png|svg|tiff?|webp)$/i.test(path))) return;
       const old = items.get(url), info = {...context,...metadata};
       const source = old && (confidence[old.source] || 0) > (confidence[metadata.source] || 0) ? old.source : metadata.source;
       const keepMIME = old?.mime && (confidence[old.source] || 0) > (confidence[metadata.source] || 0);
@@ -116,13 +120,14 @@ export function collect(previousURLs = []) {
     if (Number.isFinite(value.duration) && value.duration >= 0) configMeta.duration = value.duration;
     const types = Array.isArray(value['@type']) ? value['@type'] : [value['@type']];
     const isVideoObject = types.some(type => typeof type === 'string' && /(?:^|[\/#])VideoObject$/.test(type));
-    if (isVideoObject && typeof value.contentUrl === 'string') add(value.contentUrl,{...configMeta,source:'metadata',mediaHint:true,mime:typeof value.encodingFormat === 'string' && videoMIME.test(value.encodingFormat) ? value.encodingFormat : ''},base);
+    if (isVideoObject && typeof value.contentUrl === 'string') add(value.contentUrl,{...configMeta,source:'metadata',mediaHint:true,mime:typeof value.encodingFormat === 'string' && (videoMIME.test(value.encodingFormat) || /^image\//i.test(value.encodingFormat.trim())) ? value.encodingFormat : ''},base);
     if (isVideoObject && typeof value.embedUrl === 'string') addFrame(value.embedUrl,base);
     const rawMIME = typeof value.type === 'string' ? value.type : typeof value.mimeType === 'string' ? value.mimeType : '';
     const mime = ({hls:'application/vnd.apple.mpegurl',dash:'application/dash+xml',mp4:'video/mp4',webm:'video/webm'})[rawMIME.toLowerCase()] || rawMIME;
+    const imageMIME = /^image\//i.test(mime.trim()) ? mime : '';
     for (const key of ['file','src','url']) {
       const url = value[key];
-      if (typeof url === 'string' && (mediaSuffix.test(url) || videoMIME.test(mime))) add(url,{...configMeta,source,mime:videoMIME.test(mime) ? mime : '',mediaHint:true},base);
+      if (typeof url === 'string' && (mediaSuffix.test(url) || videoMIME.test(mime))) add(url,{...configMeta,source,mime:imageMIME || (videoMIME.test(mime) ? mime : ''),mediaHint:true},base);
     }
     const videoFields = {
       video_url:'',videoUrl:'',video_src:'',videoSrc:'',playbackUrl:'',
@@ -130,7 +135,7 @@ export function collect(previousURLs = []) {
       dash:'application/dash+xml',dashUrl:'application/dash+xml',dash_url:'application/dash+xml',dashManifestUrl:'application/dash+xml',
     };
     for (const [key,type] of Object.entries(videoFields)) if (typeof value[key] === 'string') {
-      add(value[key],{...configMeta,source,mime:type || (videoMIME.test(mime) ? mime : ''),mediaHint:true},base);
+      add(value[key],{...configMeta,source,mime:imageMIME || type || (videoMIME.test(mime) ? mime : ''),mediaHint:true},base);
     }
     // Traverse bounded objects to find nested sources and VideoObjects, but do not treat
     // unrelated endpoint/thumbnail/embedUrl values as media files.
@@ -245,7 +250,7 @@ export function collect(previousURLs = []) {
       else if (/^og:video:(url|secure_url)$/.test(key)) ogGroup.push(meta);
       else if (key === 'og:video:type') {
         const type = meta.getAttribute('content') || '';
-        if (videoMIME.test(type)) for (const member of ogGroup) ogTypes.set(member,type);
+        if (videoMIME.test(type) || /^image\//i.test(type.trim())) for (const member of ogGroup) ogTypes.set(member,type);
       }
     }
     const walk = root => {
