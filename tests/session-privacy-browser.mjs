@@ -7,6 +7,7 @@ import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createServer} from 'node:http';
 import {createHash} from 'node:crypto';
+import {spawnSync} from 'node:child_process';
 import {setTimeout as delay} from 'node:timers/promises';
 import {launchTestExtension} from './chrome-runtime.mjs';
 
@@ -55,6 +56,24 @@ function assertMinimalState(state,{queued,accepted,acceptedId}) {
 }
 
 try {
+  // The session contract does not depend on canvas MediaRecorder startup, whose
+  // first-frame timing differs in Chrome 116. Generate and decode a real local
+  // WebM fixture before Chrome starts; the browser still performs every download.
+  const clipPath=join(scratch,'synthetic.webm');
+  const generated=spawnSync('ffmpeg',['-hide_banner','-loglevel','error','-nostdin','-y',
+    '-f','lavfi','-i','testsrc2=size=160x90:rate=12','-t','1','-an',
+    '-c:v','libvpx','-b:v','200k','-threads','1','-f','webm',clipPath],{encoding:'utf8',timeout:20000});
+  assert.equal(generated.status,0,'local ffmpeg generates the synthetic WebM fixture');
+  clip=await readFile(clipPath);
+  assert.ok(clip.length>32,'the fixture contains real local WebM bytes');
+  const probed=spawnSync('ffprobe',['-v','error','-count_frames','-show_entries','format=format_name,duration:stream=codec_type,codec_name,nb_read_frames','-of','json',clipPath],{encoding:'utf8',timeout:20000});
+  assert.equal(probed.status,0,'the synthetic WebM has a readable container');
+  const media=JSON.parse(probed.stdout);
+  assert.equal(media.format.format_name.includes('webm'),true,'the fixture is a real WebM container');
+  assert.equal(Number(media.format.duration)>=0.9,true,'the fixture contains the complete synthetic second');
+  assert.equal(media.streams.some(stream=>stream.codec_type==='video' && stream.codec_name==='vp8' && Number(stream.nb_read_frames)>=12),true,'the fixture contains at least twelve real VP8 frames');
+  const decoded=spawnSync('ffmpeg',['-hide_banner','-loglevel','error','-nostdin','-xerror','-err_detect','explode','-i',clipPath,'-map','0:v','-f','null','-'],{encoding:'utf8',timeout:20000});
+  assert.equal(decoded.status,0,'the synthetic input decodes completely');
   await cp(join(repo,'extension'),extension,{recursive:true});await mkdir(downloadsDirectory);
   const workerPath=join(extension,'background.js');
   await writeFile(workerPath,(await readFile(workerPath,'utf8'))+`
@@ -74,9 +93,10 @@ globalThis.__workerBoot=crypto.randomUUID();
       response.write(clip.subarray(0,16));pendingResponses.set(url.pathname,response);return;
     }
     if(url.pathname==='/frame') {response.setHeader('Content-Type','text/html');response.end('<!doctype html><title>Synthetic embed</title>');return;}
+    if(url.pathname==='/preview.webm') {response.writeHead(200,{'Content-Type':'video/webm','Content-Length':clip.length});response.end(clip);return;}
     response.setHeader('Content-Type','text/html');
     response.end(`<!doctype html><html lang="ja"><meta charset="utf-8"><title>SESSION_TITLE_FIXTURE</title><body>
-      <canvas id="drawing" width="160" height="90"></canvas><video id="preview" title="Synthetic live preview" muted autoplay width="160" height="90"></video>
+      <video id="preview" title="Synthetic video preview" src="/preview.webm" muted autoplay loop width="160" height="90"></video>
       ${paths.map((path,index)=>`<a href="${path}?UnKnOwN=${queryValues[index]}">Synthetic video ${index+1}</a>`).join('')}
       <iframe src="http://localhost:${server.address().port}/frame?ref=SESSION_FRAME_QUERY" title="Synthetic embed"></iframe>
       </body></html>`);
@@ -91,15 +111,7 @@ globalThis.__workerBoot=crypto.randomUUID();
   });
   context=runtime.context;const {worker,id}=runtime;
   const page=await context.newPage();await page.goto(origin+'/?source=SESSION_DOCUMENT_QUERY');
-  clip=Buffer.from(await page.evaluate(async()=>{
-    const canvas=document.querySelector('#drawing'),drawing=canvas.getContext('2d'),stream=canvas.captureStream(12),parts=[];
-    let frame=0;globalThis.__fixtureDrawingTimer=setInterval(()=>{drawing.fillStyle=frame++%2 ? '#127d87' : '#d77462';drawing.fillRect(0,0,160,90);},40);
-    const video=document.querySelector('#preview');video.srcObject=stream;await video.play();
-    const recorder=new MediaRecorder(stream,{mimeType:'video/webm'});
-    const done=new Promise(resolve=>{recorder.ondataavailable=event=>parts.push(event.data);recorder.onstop=async()=>resolve([...new Uint8Array(await new Blob(parts,{type:'video/webm'}).arrayBuffer())]);});
-    recorder.start(100);await new Promise(resolve=>setTimeout(resolve,500));recorder.stop();return done;
-  }));
-  assert.ok(clip.length>32,'the fixture generated real local WebM bytes');
+  await page.locator('#preview').evaluate(video=>video.play());
   await page.waitForFunction(()=>document.querySelector('#preview').readyState>=2 && document.querySelector('#preview').videoWidth>0);
   const tab=await worker.evaluate(async origin=>(await chrome.tabs.query({})).find(tab=>tab.url===origin+'/?source=SESSION_DOCUMENT_QUERY'),origin);
   assert.ok(tab,'the synthetic source tab is available');

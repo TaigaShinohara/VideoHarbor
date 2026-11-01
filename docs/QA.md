@@ -1,5 +1,26 @@
 # QA — v0.1
 
+## 情報表示・保存名・保持範囲の改善 — 2026-11-01 / v0.6.1
+
+- 工程ごとに文書/連絡先（PR #22）、中立保存名（#23）、URL表示/不透明DOM ID（#24）、閉鎖session最小化（#25）を統合。最終工程でローカル監査コマンド、検証記録、バージョンをそろえた。結果・範囲・残る情報は [PRIVACY-IMPLEMENTATION-2026-11-01.md](PRIVACY-IMPLEMENTATION-2026-11-01.md)。
+- `npm test`: 334件PASS、失敗・SKIPなし。`npm run check` / `git diff --check`: PASS。URL漏洩、遅延したChrome受付、古いstorage snapshotによる二重開始、遅いscanの試験helperは修正前FAIL→修正後PASSを確認し、閉鎖処理を独立再レビューした。
+
+| 隔離Chromeの合成試験 | 現行Chrome 156.0.8078.80 | Chrome for Testing 116.0.5845.96 |
+| --- | --- | --- |
+| `test:browser` | PASS | PASS |
+| `test:embedded` | PASS | PASS |
+| `test:video` | PASS | PASS |
+| `test:privacy` | PASS | PASS |
+| `test:security` | PASS | PASS |
+| `test:worker` | PASS | PASS |
+
+- Chrome116はGoogle公式ZIPをタスク専用一時領域へ取得し、既存QA記録のSHA-256と一致を確認して使用。個人Chromeプロファイルや他タスクのブラウザ資材は変更していない。
+- `test:embedded`は署名query/opaque pathのDOM非露出と完全URLの実取得、query違いの形式選択/再scan保持、直接/HLS/DASH/blob/TS→MP4の実ファイルと全編decodeを確認。`test:video`は実captureStream/MediaRecorder、対象映像・音の分離、CORS/MSE/srcObject/同別origin frame・OPFS等を確認した。
+- `test:privacy`はffmpeg/ffprobeで事前検証した合成WebMを使用。API返答のみ遅延させた実download、閉鎖直後の投影、受付後のURL/path除去、対象Workerの強制再起動とboot変更、native downloadイベントによる残り2本継続、全session削除、実ファイル3本の中立名/size/SHA-256一致を確認。自然なidle停止だけの保証とは区別する。
+- 試験のasync predicate待機、Chrome116のcanvas fixture、CDP download override/Worker objectの再利用に関する前提を修正した。検証の閾値や情報非露出・実ファイル一致の条件は弱めていない。製品の不具合と試験側の互換修正を区別する。
+- `npm run audit:information`: 現行82ファイル（うち実行用29）、ignored178ファイル（すべて開発依存）、ローカルGit533 object中317 blob・64 commitを全走査し、失敗0・設定した走査範囲完了。この件数は最終記録commit前のsnapshot。履歴の旧参照8件と既知の作者識別情報は残存として分類し、消去済みとは扱わない。実資格情報・指定外の個人メール・現行の内部URLは未検出。
+- 未実施: 実OSの共有/保存picker、実音声の聴取、本人の操作体験、任意の実サイト、30分の長時間試験の再実行、指定メールの受信確認・GitHubアカウントへの追加。既存の本人実機QA待機は維持する。
+
 ## 未解決PR指摘と情報点検 — 2026-11-01
 
 - 全19件の既存PRを確認。すべてマージ済みだったが、#5の未解決指摘2件が現行コードにも残っていたため修正した。実応答の `application/ogg` とMP4選択の不一致、AVC escapeの検査prefix境界を対象とする。

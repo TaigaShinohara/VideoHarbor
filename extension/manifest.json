@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "VideoHarbor",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "minimum_chrome_version": "116",
   "description": "動画の直接保存と、選んだ動画・タブ・画面の録画。",
   "permissions": [
