@@ -1,14 +1,22 @@
 import assert from 'node:assert/strict';
+import {setTimeout as delay} from 'node:timers/promises';
 
 // Test code resolves synthetic source URLs through the same module instance.
 // Production DOM attributes contain only the resulting opaque IDs.
 export async function candidateLocator(manager,url,selector='.video-card') {
-  const handle=await manager.waitForFunction(async url=>{
-    const {resources}=await import(chrome.runtime.getURL('presentation.js'));
-    return resources.knownId(url);
-  },url,{timeout:15000});
-  const id=await handle.jsonValue();await handle.dispose();
-  return manager.locator(selector.split(',').map(part=>`${part}[data-candidate-id="${id}"]`).join(','));
+  // waitForFunction treats an async predicate's Promise as truthy before its
+  // resolved value is checked. Await each probe here so a slower scan cannot
+  // turn an unresolved resource into a literal "undefined" selector.
+  const deadline=Date.now()+15000;
+  while(Date.now()<deadline) {
+    const id=await manager.evaluate(async url=>{
+      const {resources}=await import(chrome.runtime.getURL('presentation.js'));
+      return resources.knownId(url);
+    },url);
+    if(typeof id==='string' && /^source-\d+$/.test(id))return manager.locator(selector.split(',').map(part=>`${part}[data-candidate-id="${id}"]`).join(','));
+    await delay(25);
+  }
+  assert.fail('the synthetic source did not acquire an opaque candidate ID before the timeout');
 }
 
 export async function candidateCount(manager,url,selector='.video-card') {
