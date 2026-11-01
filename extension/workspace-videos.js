@@ -1,7 +1,8 @@
-import {fileLabel,extensionOf} from './utils.js';
+import {extensionOf} from './utils.js';
 import {originPattern} from './media-save.js';
 import {groupVideos,formatDuration} from './video-view.js';
 import {originalExtension} from './output-format.js';
+import {resources,candidateLabel,sourceHost,displayText} from './presentation.js';
 
 export function renderVideoGroups({state,element,icon,statusElement,onSave,onRecord,onLocate,onFramePermission,onLocateFrame,formatOptions,formatValue,onFormatChange}) {
   const $=id=>document.getElementById(id), supported=item=>['direct','hls','dash','blob'].includes(item.type);
@@ -14,7 +15,7 @@ export function renderVideoGroups({state,element,icon,statusElement,onSave,onRec
   for(const group of groups) {
     const section=element('section','video-group');
     const heading=element('div','video-group-heading'), description=element('div','video-identity');
-    const name=group.title || (group.linked ? `ページ上の動画 ${++videoNumber}` : '内容を確認できていない候補');
+    const name=displayText(group.title) || (group.linked ? `ページ上の動画 ${++videoNumber}` : '内容を確認できていない候補');
     description.append(element('h3','video-title',name));
     const facts=[];
     if(group.playing)facts.push('再生中');
@@ -44,34 +45,36 @@ export function renderVideoGroups({state,element,icon,statusElement,onSave,onRec
     let alternatives;
     for(const [itemIndex,item] of group.items.entries()) {
       const card=element('article','video-card'),info=element('div','video-info');
+      const candidateId=resources.id(item.url),candidateName=candidateLabel(item.url);
+      card.dataset.candidateId=candidateId;
       const format=item.type==='direct' ? (originalExtension(item) || extensionOf(item.url,'videos')).toUpperCase() : item.type==='blob' ? 'ページ内動画' : item.type.toUpperCase();
       const fileIcon=element('div','file-icon');fileIcon.setAttribute('aria-hidden','true');fileIcon.append(icon('file'),element('span','',format));
-      info.append(element('h4','file-name',fileLabel(item.url)));
-      let host='ページ内データ';try{host=new URL(item.url).hostname || host;}catch{}
+      info.append(element('h4','file-name',candidateName));
+      const host=sourceHost(item.url);
       info.append(statusElement(item));
-      const details=element('details','url-detail');details.append(element('summary','','詳細'),element('p','meta',`${format} · ${host}${item.width && item.height ? ` · ${item.width} × ${item.height}` : ''}`),element('p','meta',item.url.length>500 ? item.url.slice(0,500)+'…' : item.url));
+      const details=element('details','url-detail');details.append(element('summary','','詳細'),element('p','meta',`${format} · ${host}${item.width && item.height ? ` · ${item.width} × ${item.height}` : ''}`));
       const notes={hls:'HLSをファイルにまとめます。単独リストでは別配信の音声を判別できません。',dash:'DASHの映像・音声を対応するMP4にまとめます。',blob:'元ファイル型のページ内動画を取得します。分割再生用blobは未対応です。'};
       if(notes[item.type])details.append(element('p','hint',`${notes[item.type]} 最大256 MiB。`));
       info.append(details);
-      const sites=element('p','hint permission-sites');sites.dataset.url=item.url;sites.hidden=true;info.append(sites);
+      const sites=element('p','hint permission-sites');sites.dataset.candidateId=candidateId;sites.hidden=true;info.append(sites);
       if(supported(item) && formatOptions) {
-        const select=element('select','output-format');select.dataset.url=item.url;select.id=`format-${formatIndex++}`;
+        const select=element('select','output-format');select.dataset.candidateId=candidateId;select.id=`format-${formatIndex++}`;
         const options=formatOptions(item);
         for(const option of options) {const node=element('option','',option.label);node.value=option.value;node.disabled=Boolean(option.disabled);select.append(node);}
         select.value=formatValue(item,options);
-        select.setAttribute('aria-label',`${name} · ${fileLabel(item.url)}の保存形式`);
+        select.setAttribute('aria-label',`${name} · ${candidateName}の保存形式`);
         select.addEventListener('change',()=>onFormatChange(item,select));
         const choice=element('div','format-choice'),label=element('label','','保存形式');label.htmlFor=select.id;choice.append(label,select);info.append(choice);
         const reason=options.find(option=>option.value==='mp4')?.reason;
         if(reason) {const hint=element('p','hint format-hint',reason);hint.id=`${select.id}-hint`;select.setAttribute('aria-describedby',hint.id);details.append(hint);}
       }
       const actions=element('div','candidate-actions');
-      const button=element('button',supported(item) ? `primary ${item.type==='direct' ? 'direct-save' : 'media-save'}` : 'secondary');button.dataset.url=item.url;
+      const button=element('button',supported(item) ? `primary ${item.type==='direct' ? 'direct-save' : 'media-save'}` : 'secondary');button.dataset.candidateId=candidateId;
       button.dataset.displayName=name;
       button.append(icon(supported(item) ? 'download' : 'record'),document.createTextNode(supported(item) ? '保存' : '録画へ'));
-      button.setAttribute('aria-label',`${name} · ${fileLabel(item.url)}${supported(item) ? 'を保存' : 'の録画設定へ'}`);
+      button.setAttribute('aria-label',`${name} · ${candidateName}${supported(item) ? 'を保存' : 'の録画設定へ'}`);
       button.addEventListener('click',()=>supported(item) ? onSave(item) : onRecord(group.recordable ? group.source : undefined));actions.append(button);
-      const result=element('div','candidate-result');result.dataset.url=item.url;actions.append(result);
+      const result=element('div','candidate-result');result.dataset.candidateId=candidateId;actions.append(result);
       card.append(fileIcon,info,actions);
       if(itemIndex===0)section.append(card);
       else {
@@ -86,7 +89,7 @@ export function renderVideoGroups({state,element,icon,statusElement,onSave,onRec
   $('frame-sites').replaceChildren();$('frame-access').hidden=!(state.frames || []).length;
   for(const [index,frame] of (state.frames || []).entries()) {
     let origin;try{origin=originPattern(frame.url);}catch{continue;}
-    const card=element('article','embed-card'),title=frame.title || `ページ内の埋め込み ${index+1}`;
+    const card=element('article','embed-card'),title=displayText(frame.title) || `ページ内の埋め込み ${index+1}`;
     card.append(element('h3','video-title',title),element('p','hint',`${new URL(origin).hostname} の埋め込みを調べます。許可の範囲はこのサイトです。`));
     const actions=element('div','actions');
     if(frame.locatable && frame.elementToken && frame.frameToken) {const locate=element('button','secondary','元ページで確認');locate.addEventListener('click',()=>onLocateFrame(frame));actions.append(locate);}
@@ -96,5 +99,5 @@ export function renderVideoGroups({state,element,icon,statusElement,onSave,onRec
   }
   $('previous-candidates').hidden=!(state.previousItems || []).length;
   $('previous-list').replaceChildren();
-  for(const item of state.previousItems || []) $('previous-list').append(element('li','',item.title || fileLabel(item.url)));
+  for(const item of state.previousItems || []) $('previous-list').append(element('li','',displayText(item.title) || candidateLabel(item.url)));
 }
