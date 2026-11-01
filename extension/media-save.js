@@ -3,7 +3,8 @@ import { prepareDASH } from './dash.js';
 import { assembleStream } from './stream-assembly.js';
 import { MediaProcessor } from './media-processing.js';
 import { validateOutputFormat } from './output-format.js';
-import { sanitizePart, fileLabel, publicError } from './utils.js';
+import { publicError } from './utils.js';
+import { outputName } from './filenames.js';
 
 export function originPattern(url) {
   const value=new URL(url);
@@ -59,7 +60,8 @@ export class MediaSaver {
   async run(item,title,permission,previous,outputFormat,operation) {
     let objectURL,blobToken;
     const sameFormat=previous?.outputFormat===outputFormat;
-    const result={status:'preparing',message:'動画の配信情報を確認しています。',bytesReceived:0,outputFormat,audioUnverified:sameFormat && Boolean(previous?.audioUnverified)};
+    const result={status:'preparing',message:'動画の配信情報を確認しています。',bytesReceived:0,outputFormat,audioUnverified:sameFormat && Boolean(previous?.audioUnverified),
+      downloadName:sameFormat && previous?.status!=='complete' ? previous?.downloadName : undefined};
     this.results.set(item.url,result);this.emit();
     try {
       if(!await permission)throw new Error('配信元へのアクセスは許可されませんでした。もう一度「保存」から試せます。');
@@ -100,11 +102,11 @@ export class MediaSaver {
         blob=await processor().remux(bytes);signal.throwIfAborted();extension='mp4';
       }
       if(outputFormat==='mp4' && extension!=='mp4')throw new Error('この形式のMP4変換には未対応です。「元の形式」を選んでください。');
-      Object.assign(result,{blob,extension,status:'saving',message:'ファイルへ保存しています。',bytesReceived:blob.size});this.emit();
+      const downloadName=previous?.extension===extension ? result.downloadName : undefined;
+      Object.assign(result,{blob,extension,downloadName:downloadName || outputName(extension),status:'saving',message:'ファイルへ保存しています。',bytesReceived:blob.size});this.emit();
       signal.throwIfAborted();
       objectURL=URL.createObjectURL(blob);
-      const stem=sanitizePart(fileLabel(item.url).replace(/\.[a-z0-9]{2,5}$/i,''),'video');
-      operation.downloadId=await chrome.downloads.download({url:objectURL,filename:`VideoHarbor/${sanitizePart(title)}/${stem}.${extension}`,conflictAction:'uniquify',saveAs:false});
+      operation.downloadId=await chrome.downloads.download({url:objectURL,filename:result.downloadName,conflictAction:'uniquify',saveAs:false});
       if(this.operation===operation)this.downloadId=operation.downloadId;
       result.downloadId=operation.downloadId;
       // The user may cancel while Chrome is accepting the download.

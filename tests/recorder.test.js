@@ -226,6 +226,9 @@ test('browser stop and concurrent stop share one finalization and preserve final
 
 test('download acceptance is not success; interrupted save retains retryable recording', async (t) => {
   const h = harness(t);
+  h.controller.source.title='SyntheticPerson private-title';
+  const submitted=[];
+  h.downloads.download=async config=>{submitted.push(config);return 42;};
   await h.controller.start('display', false, 'memory');
   await h.controller.stop();
   h.downloads.search = async () => [{ id: 42, state: 'in_progress' }];
@@ -241,6 +244,27 @@ test('download acceptance is not success; interrupted save retains retryable rec
   assert.equal(await h.controller.save(), true);
   assert.equal(h.controller.snapshot().resultSaved, true);
   assert.equal(h.listeners.size, 0);
+  assert.match(submitted[0].filename,/^VideoHarbor\/\d{4}-\d{2}-\d{2}\/recording-\d{9}-\d{3,}\.webm$/);
+  assert.doesNotMatch(submitted[0].filename,/Synthetic|private/);
+  assert.equal(submitted[1].filename,submitted[0].filename,'retry keeps the recording name');
+  assert.ok(submitted.every(call=>call.saveAs===true && call.conflictAction==='uniquify'));
+});
+
+test('file picker suggests a neutral basename and preserves the user-chosen output name',async t=>{
+  const suggestions=[];
+  const h=harness(t,{picker:async options=>{suggestions.push(options.suggestedName);return {
+    name:'My chosen recording.webm',createWritable:async()=>({async write(){},async close(){}}),
+  };}});
+  h.controller.source.title='SyntheticPerson private-title';
+  assert.equal(await h.controller.chooseFile(),true);
+  assert.match(suggestions[0],/^recording-\d{9}-\d{3,}\.webm$/);
+  assert.doesNotMatch(suggestions[0],/Synthetic|private|\//);
+  assert.equal(await h.controller.start('display',false,'file'),true);
+  await h.controller.stop();
+  assert.equal(h.controller.snapshot().fileName,'My chosen recording.webm');
+  assert.equal(h.controller.snapshot().resultSaved,true);
+  await h.controller.chooseFile();
+  assert.notEqual(suggestions[1],suggestions[0]);
 });
 
 test('file-choice cancellation retains previous handle', async (t) => {
@@ -722,9 +746,12 @@ class RemoteRecorder extends Recorder {
 test('video capture uses the selected element without any tab or display capture, and preserves final data', async t=>{
   const remote=new RemoteRecorder();let prepared;
   const h=harness(t,{prepareVideo:async options=>{prepared=options;return remote;}});
-  assert.equal(await h.controller.start('video',true,'memory',videoReference),true);
+  const reference={...videoReference,title:'SyntheticPerson private-video'};
+  assert.equal(await h.controller.start('video',true,'memory',reference),true);
+  assert.match(h.controller.snapshot().fileName,/^VideoHarbor\/\d{4}-\d{2}-\d{2}\/recording-\d{9}-\d{3,}\.webm$/);
+  assert.doesNotMatch(h.controller.snapshot().fileName,/Synthetic|private/);
   assert.deepEqual(h.calls,['acquire:video']);
-  assert.equal(prepared.reference,videoReference);assert.equal(prepared.audio,true);
+  assert.equal(prepared.reference,reference);assert.equal(prepared.audio,true);
   assert.equal(h.controller.stream,null);assert.equal(h.audioContexts(),0);
   remote.chunk('selected');
   assert.equal(await h.controller.pause(),true);assert.equal(h.controller.snapshot().phase,'paused');
@@ -732,6 +759,15 @@ test('video capture uses the selected element without any tab or display capture
   await h.controller.stop();
   assert.equal(await (await h.controller.getResultFile()).text(),'selectedfinal');
   assert.equal(h.controller.snapshot().method,'video');assert.equal(remote.closed,1);assert.equal(h.releases(),1);
+});
+
+test('capture control failures hide signed URLs regardless of scheme casing',async t=>{
+  const error=new Error('Source unavailable HTTPS://media.test/SyntheticPerson?Signature=SyntheticPrivate');
+  error.name='CaptureControlError';
+  const h=harness(t,{prepareVideo:async()=>{throw error;}});
+  assert.equal(await h.controller.start('video',false,'memory',videoReference),false);
+  assert.match(h.controller.snapshot().message,/^Source unavailable \[URL\]/);
+  assert.doesNotMatch(h.controller.snapshot().message,/Synthetic|Signature/);
 });
 
 test('video with missing audio waits for a decision before recording and never switches to the tab', async t=>{
