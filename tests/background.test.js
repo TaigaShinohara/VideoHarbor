@@ -20,6 +20,7 @@ function event() {
   const listeners = new Set();
   return { addListener: (listener) => listeners.add(listener),
     removeListener: (listener) => listeners.delete(listener),
+    clear: () => listeners.clear(),
     emit: (...args) => [...listeners].map((listener) => listener(...args)) };
 }
 
@@ -101,6 +102,10 @@ async function browser(t) {
     failScript(error) { scriptError=error; },
     failPermission(error) { permissionError=error; },
     closeWorkspace() { tabs.delete(100); removed.emit(100); },
+    async restartWorker() {
+      changed.clear();removed.clear();messages.clear();chrome.action.onClicked.clear();
+      return import(`${new URL('../extension/background.js', import.meta.url).href}?test=${moduleNumber++}`);
+    },
     complete(id) {
       Object.assign(downloads.get(id), { state: 'complete', bytesReceived: 10, totalBytes: 10 });
       changed.emit({ id, state: { current: 'complete' } });
@@ -138,6 +143,145 @@ test('BG-01: closing the workspace preserves and completes the already accepted 
     return !saved || saved.jobs.every((job) => ['complete', 'interrupted'].includes(job.status));
   }, 'closed workspace must not leave a queued or in-progress batch after all downloads finish');
   assert.equal(h.requested.length, 1, 'neither completed file is downloaded a second time');
+});
+
+function privateQueue(h) {
+  Object.assign(h.state,{url:'https://source.test/private-page?token=synthetic',title:'Private page title',
+    items:[{url:'https://source.test/private-media.mp4?token=synthetic',previewDataURL:'data:image/jpeg;base64,cHJpdmF0ZQ=='}],
+    previousItems:[{url:'https://source.test/previous.mp4'}],history:[{url:'https://source.test/history.mp4',actualFilename:'/Users/example/private/history.mp4'}],
+    videoElements:[{documentURL:'https://source.test/private-frame',title:'Private video',previewDataURL:'data:image/jpeg;base64,cHJpdmF0ZQ=='}],
+    frames:[{url:'https://embed.test/private'}],notices:['Private notice'],
+    jobs:[{url:'https://source.test/first.mp4?signature=synthetic-one',filename:'VideoHarbor/first.mp4',outputFormat:'mp4',downloadId:7,status:'in_progress',actualFilename:'/Users/example/private/first.mp4'},
+      {url:'https://source.test/second.mp4?signature=synthetic-two',filename:'VideoHarbor/second.mp4',outputFormat:'mp4',status:'queued',title:'Private job title'}]});
+  h.downloads.set(7,{id:7,state:'in_progress',mime:'video/mp4',filename:'/Users/example/private/first.mp4',bytesReceived:1,totalBytes:10});
+  h.persist();
+}
+
+function minimalQueue(h) {
+  assert.deepEqual(h.store.get('workspace:work'),{id:'work',closed:true,jobs:[
+    {downloadId:7,status:'in_progress',outputFormat:'mp4'},
+    {url:'https://source.test/second.mp4?signature=synthetic-two',filename:'VideoHarbor/second.mp4',outputFormat:'mp4',status:'queued'},
+  ]});
+}
+
+test('closed session drops page, preview, history and accepted URL/path while preserving only the queued request',async t=>{
+  const h=await browser(t);privateQueue(h);h.closeWorkspace();
+  await eventually(()=>h.store.get('workspace:work')?.closed,'close is persisted');minimalQueue(h);
+  h.complete(7);
+  await eventually(()=>h.requested.length===1,'next queued request is accepted');
+  const second=h.requested[0];assert.equal(second.url,'https://source.test/second.mp4?signature=synthetic-two');assert.equal(second.filename,'VideoHarbor/second.mp4');
+  await eventually(()=>h.store.get('workspace:work')?.jobs.length===1,'accepted request replaces queued private fields');
+  assert.deepEqual(h.store.get('workspace:work'),{id:'work',closed:true,jobs:[{downloadId:second.id,status:'in_progress',outputFormat:'mp4'}]});
+  h.downloads.get(second.id).filename='/Users/example/private/second.mp4';h.complete(second.id);
+  await eventually(()=>!h.store.has('workspace:work'),'all terminal jobs remove the session');
+});
+
+test('a navigated workspace uses the same closed projection and does not duplicate an accepted download',async t=>{
+  const h=await browser(t);privateQueue(h);h.tabs.get(100).url='https://elsewhere.test/';
+  await h.openWorkspace({id:2,url:'https://second.test/',title:'Second'});minimalQueue(h);
+  assert.equal(h.requested.length,0);
+  h.complete(7);await eventually(()=>h.requested.length===1,'navigation keeps the accepted queue progressing');
+  h.complete(h.requested[0].id);await eventually(()=>!h.store.has('workspace:work'),'navigated closed session is removed');
+});
+
+test('worker restart preserves the minimized queue without discovery migration or closed-page access',async t=>{
+  const h=await browser(t);privateQueue(h);h.closeWorkspace();
+  await eventually(()=>h.store.get('workspace:work')?.closed,'close is persisted');minimalQueue(h);
+  await h.restartWorker();
+  const response=await h.send({type:'get'});assert.equal(response.ok,false);assert.equal(response.data,undefined);minimalQueue(h);
+  h.complete(7);await eventually(()=>h.requested.length===1,'restarted worker receives completion and starts next file');
+  await eventually(()=>h.store.get('workspace:work')?.jobs.length===1,'only pending download metadata remains');
+  assert.deepEqual(Object.keys(h.store.get('workspace:work')).sort(),['closed','id','jobs']);
+  h.complete(h.requested[0].id);await eventually(()=>!h.store.has('workspace:work'),'restarted worker removes terminal session');
+});
+
+test('close racing a delayed Chrome acceptance drops the newly accepted URL and finishes subsequent jobs',async t=>{
+  const h=await browser(t),url='https://source.test/start.mp4?signature=synthetic';
+  h.state.items=[{url,type:'direct'}];h.persist();
+  let accept;const original=h.chrome.downloads.download;
+  h.chrome.downloads.download=options=>new Promise(resolve=>{accept=async()=>resolve(await original(options));});
+  const pending=h.send({type:'save',urls:[url]});await eventually(()=>Boolean(accept),'Chrome acceptance is pending');h.closeWorkspace();await accept();
+  assert.equal((await pending).ok,true);await eventually(()=>h.store.get('workspace:work')?.closed,'queued close processes after acceptance');
+  assert.deepEqual(h.store.get('workspace:work'),{id:'work',closed:true,jobs:[{status:'in_progress',downloadId:8,outputFormat:'auto'}]});
+  h.complete(8);await eventually(()=>!h.store.has('workspace:work'),'accepted-close race removes the session at completion');
+});
+
+test('close minimizes discovery before delayed acceptance and keeps each queued file submitted only once',async t=>{
+  const h=await browser(t),urls=['https://source.test/first.mp4?signature=synthetic-one','https://source.test/second.mp4?signature=synthetic-two'];
+  h.state.title='Synthetic private page';h.state.items=urls.map(url=>({url,type:'direct',previewDataURL:'data:image/jpeg;base64,cHJpdmF0ZQ=='}));h.persist();
+  let accept;const original=h.chrome.downloads.download;
+  h.chrome.downloads.download=options=>!accept ? new Promise(resolve=>{accept=async()=>resolve(await original(options));}) : original(options);
+  const pending=h.send({type:'save',urls});await eventually(()=>Boolean(accept),'acceptance is pending');
+  h.closeWorkspace();
+  try {
+    await eventually(()=>h.store.get('workspace:work')?.closed,'closed projection must not wait for Chrome acceptance');
+    const state=h.store.get('workspace:work');
+    assert.deepEqual(Object.keys(state).sort(),['closed','id','jobs']);assert.equal(state.jobs.length,2);
+    assert.deepEqual(state.jobs.map(job=>job.url),urls);
+    assert.ok(state.jobs.every(job=>Object.keys(job).sort().join(',')==='filename,outputFormat,status,url' && job.status==='queued'));
+    assert.equal(h.requested.length,0,'projection does not start a second pump');
+  } finally { await accept();await pending; }
+  await eventually(()=>h.store.get('workspace:work')?.jobs[0]?.downloadId===8,'accepted request is minimized to its ID');
+  h.complete(8);await eventually(()=>h.requested.length===2,'second file starts once');
+  h.complete(9);await eventually(()=>!h.store.has('workspace:work'),'all files finish');
+  assert.deepEqual(h.requested.map(request=>request.url),urls);
+});
+
+test('an in-flight full storage write cannot restore discovery after the close projection',async t=>{
+  const h=await browser(t),url='https://source.test/private.mp4?signature=synthetic';
+  h.state.title='Synthetic private page';h.state.items=[{url,type:'direct'}];h.persist();
+  let release;const original=h.chrome.storage.session.set;
+  h.chrome.storage.session.set=values=>{
+    if(release || values['workspace:work']?.closed)return original(values);
+    const snapshot=structuredClone(values);
+    return new Promise(resolve=>{release=async()=>{await original(snapshot);resolve();};});
+  };
+  const pending=h.send({type:'save',urls:[url]});await eventually(()=>Boolean(release),'full write is in flight');
+  h.closeWorkspace();await release();await pending;
+  await eventually(()=>h.store.get('workspace:work')?.closed,'close projection follows the prior storage write');
+  for(let i=0;i<5;i++)await nextTurn();
+  assert.deepEqual(h.store.get('workspace:work'),{id:'work',closed:true,jobs:[{status:'in_progress',downloadId:8,outputFormat:'auto'}]});
+  assert.equal(h.requested.length,1);
+  h.complete(8);await eventually(()=>!h.store.has('workspace:work'),'terminal cleanup survives write ordering');
+});
+
+test('a stale storage snapshot racing closure cannot submit the next queued file twice',async t=>{
+  const h=await browser(t);privateQueue(h);
+  assert.equal((await h.send({type:'hello'})).ok,true);
+  const originalGet=h.chrome.storage.session.get;
+  let release,first=true;
+  h.chrome.storage.session.get=async key=>{
+    const snapshot=await originalGet(key);
+    if(key===null && first){first=false;await new Promise(resolve=>{release=resolve;});}
+    return snapshot;
+  };
+  h.complete(7);await eventually(()=>Boolean(release),'completion handler holds an old storage snapshot');
+  h.closeWorkspace();
+  await eventually(()=>h.store.get('workspace:work')?.closed,'close projection is saved independently');
+  release();await eventually(()=>h.requested.length>=1,'next file is accepted');
+  for(let i=0;i<20;i++)await nextTurn();
+  assert.equal(h.requested.length,1,'stale completion and close processing share the same job');
+  h.complete(h.requested[0].id);await eventually(()=>!h.store.has('workspace:work'),'queue finishes without a duplicate');
+});
+
+test('closed queue continues after a Chrome cancellation and removes a failed queued request',async t=>{
+  const h=await browser(t);privateQueue(h);h.closeWorkspace();await eventually(()=>h.store.get('workspace:work')?.closed,'close is persisted');
+  h.chrome.downloads.download=async()=>{throw new Error('synthetic download refusal');};
+  await h.chrome.downloads.cancel(7);
+  await eventually(()=>!h.store.has('workspace:work'),'cancelled first and rejected second are both terminal');
+});
+
+test('closing without active downloads removes all page information immediately',async t=>{
+  const h=await browser(t);privateQueue(h);h.state.jobs.forEach(job=>job.status='interrupted');h.persist();h.closeWorkspace();
+  await eventually(()=>!h.store.has('workspace:work'),'no retained state is needed after terminal jobs');assert.equal(h.requested.length,0);
+});
+
+test('an immediately completed closed download does not leave an in-progress clone in session',async t=>{
+  const h=await browser(t);privateQueue(h);h.state.jobs=h.state.jobs.slice(1);h.persist();
+  const original=h.chrome.downloads.download;h.chrome.downloads.download=async options=>{
+    const id=await original(options);h.downloads.get(id).state='complete';return id;
+  };
+  h.closeWorkspace();await eventually(()=>!h.store.has('workspace:work'),'immediate reconciliation updates the retained job object');assert.equal(h.requested.length,1);
 });
 
 test('Chrome 116 missing tab URLs do not erase a live workspace when another source is opened',async t=>{
