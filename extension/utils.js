@@ -1,4 +1,5 @@
 import { originalExtension } from './output-format.js';
+import { outputName } from './filenames.js';
 export function sanitizePart(value, fallback = 'untitled') {
   const clean = String(value ?? '').normalize('NFKC')
     .replace(/[\x00-\x1f\x7f<>:"/\\|?*\u202a-\u202e\u2066-\u2069]/g, '_')
@@ -57,6 +58,7 @@ export function fileLabel(url) {
 }
 export function downloadName(item, title, index, kind, outputFormat='auto') {
   const ext = outputFormat==='mp4' && kind==='videos' ? 'mp4' : kind==='videos' ? originalExtension(item) || extensionOf(item.url,kind) : extensionOf(item.url,kind);
+  if (kind === 'videos') return outputName(ext);
   const raw = fileLabel(item.url).replace(/\.[a-z0-9]{2,5}$/i, '');
   return `${kind === 'images' ? 'ImageCrate' : 'VideoHarbor'}/${sanitizePart(title)}/${String(index + 1).padStart(3,'0')}_${sanitizePart(raw, 'media')}.${ext}`;
 }
@@ -100,5 +102,5 @@ export function publicError(error) {
   if (name === 'NotAllowedError' || name === 'AbortError') return '操作がキャンセルされたか、許可されませんでした。';
   if (name === 'NotFoundError') return '対象が見つかりません。元のページを開き直してください。';
   // Browser errors may contain signed media URLs. Keep those out of UI reports.
-  return String(error?.message || error || '処理に失敗しました。').replace(/(?:https?|blob|data):\S+/g,'[URL]').slice(0,180);
+  return String(error?.message || error || '処理に失敗しました。').replace(/(?:https?|blob|data):\S+/gi,'[URL]').slice(0,180);
 }

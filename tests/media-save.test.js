@@ -135,6 +135,36 @@ test('download interruption retains one reusable buffer and retry does not rerea
   assert.equal(h.calls.filter(call=>call[0]==='revoke').length,2);
 });
 
+test('assembled saves use neutral distinct names and same-format retries keep their confirmed name',async t=>{
+  const h=harness(t,{state:'interrupted'});
+  const item={...blobItem,url:'blob:https://page.test/SyntheticPerson?Signature=SyntheticPrivate'};
+  await h.saver.start(item,'SyntheticPerson private-title');
+  const filename=h.calls.find(call=>call[0]==='download')[1].filename;
+  assert.match(filename,/^VideoHarbor\/\d{4}-\d{2}-\d{2}\/video-\d{9}-\d{3,}\.webm$/);
+  assert.doesNotMatch(filename,/Synthetic|private|Signature/);
+  h.state='complete';await h.saver.start(item,'Changed private-title');
+  const downloads=()=>h.calls.filter(call=>call[0]==='download').map(call=>call[1]);
+  assert.equal(downloads()[1].filename,filename,'retry does not replace the established name');
+  assert.ok(downloads().every(call=>call.conflictAction==='uniquify'));
+  await h.saver.start(item,'SyntheticPerson private-title');
+  assert.notEqual(downloads()[2].filename,filename,'a new completed-save request receives its own name');
+});
+
+test('a refetched source with a changed format cannot reuse an incompatible old filename',async t=>{
+  let mime='video/mp4';
+  const h=harness(t,{state:'interrupted',readBlob:async(url,offset)=>offset===-2 ? {released:true}
+    : {size:3,mime,bytes:offset<0 ? [] : [1,2,3]}});
+  await h.saver.start(blobItem,'Private title');
+  const first=h.calls.find(call=>call[0]==='download')[1].filename;
+  assert.ok(first.endsWith('.mp4'));
+  h.state='complete';mime='video/webm';
+  await h.saver.start({...blobItem,url:`${blobItem.url}-other`},'Other');
+  assert.equal(h.saver.status(blobItem.url).blob,undefined,'another candidate releases the original retry data');
+  await h.saver.start(blobItem,'Private title');
+  const latest=h.calls.filter(call=>call[0]==='download').at(-1)[1].filename;
+  assert.ok(latest.endsWith('.webm'));assert.notEqual(latest,first);
+});
+
 test('starting another candidate releases the previous retry buffer and duplicate starts do no work',async t=>{
   const wait=deferred();
   const h=harness(t,{state:'interrupted'});

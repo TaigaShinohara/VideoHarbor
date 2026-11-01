@@ -1,16 +1,9 @@
+import { outputName } from './filenames.js';
+
 const MEMORY_STOP_BYTES = 256 * 1024 * 1024;
 const WRITE_QUEUE_STOP_BYTES = 32 * 1024 * 1024;
 const MAX_ACTIVE_MS = 30 * 60 * 1000;
 const BUSY_PHASES = new Set(['starting', 'awaiting-audio-decision', 'recording', 'paused', 'finalizing', 'saving']);
-
-function recordingName(title) {
-  let part = String(title || '録画').normalize('NFKC')
-    .replace(/[\u0000-\u001f\u007f\\/:*?"<>|]/g, '_')
-    .replace(/^\.+|[.\s]+$/g, '').trim();
-  part = Array.from(part).slice(0, 80).join('') || '録画';
-  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part)) part = `_${part}`;
-  return `${part}-${new Date().toISOString().replace(/[:.]/g, '-')}.webm`;
-}
 
 function supportedMime() {
   return ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm']
@@ -32,7 +25,7 @@ function safeError(error) {
     NotSupportedError: 'この環境は指定した録画形式に対応していません。',
     SecurityError: 'ブラウザの制限により操作できませんでした。',
   };
-  if(error?.name === 'CaptureControlError') return String(error.message).replace(/(?:https?|blob|data):\S+/g,'[URL]').slice(0,180);
+  if(error?.name === 'CaptureControlError') return String(error.message).replace(/(?:https?|blob|data):\S+/gi,'[URL]').slice(0,180);
   return explanations[error?.name] || '操作に失敗しました。もう一度お試しください。';
 }
 
@@ -113,7 +106,7 @@ export class RecorderController {
     try {
       // Invoke the picker before the first await to preserve this click's activation.
       const handle = await globalThis.showSaveFilePicker({
-        suggestedName: recordingName(this.source.title),
+        suggestedName: outputName('webm', { recording: true, directory: false }),
         types: [{ description: 'WebM 動画', accept: { 'video/webm': ['.webm'] } }],
       });
       this._pendingOutputHandle = handle;
@@ -152,7 +145,7 @@ export class RecorderController {
       outputHandle: output === 'file' ? this._pendingOutputHandle : null,
       stream: null, remote: null, reference, writable: null, audioContext: null, trackListeners: [],
       method: mode, target: mode === 'video' ? (reference.title || '選んだ動画') : mode === 'tab' ? (this.source.title || '元のタブ') : '',
-      fileName: output === 'file' ? this._pendingOutputHandle.name : recordingName(mode === 'video' ? reference.title || this.source.title : this.source.title) };
+      fileName: output === 'file' ? this._pendingOutputHandle.name : outputName('webm', { recording: true }) };
     op.cancellation = new Promise((resolve) => { op.resolveCancellation = resolve; });
     this._pendingStart = op;
     this._phase = 'starting';
