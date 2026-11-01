@@ -9,17 +9,84 @@ const PREFIX = 'workspace:';
 let operations = Promise.resolve();
 // One mutation queue protects storage read/modify/write across concurrent events.
 const serial = task => { const next = operations.then(task); operations = next.catch(() => {}); return next; };
+// Closing must not wait behind a pending Chrome download acceptance. Keep the
+// current object so the close projection and the accepting pump share job IDs.
+const knownStates = new Map();
+const closedSessions = new Set();
+const closedTabs = new Set();
+const writes = new Map();
+// After the workspace closes, only the remaining download queue has an owner.
+// Preserve job identity while dropping fields: pump may still hold a job across
+// an await when an accepted download is reconciled immediately after saving.
+function minimizeClosed(state) {
+  const jobs=(state.jobs || []).filter(job=>['queued','in_progress'].includes(job.status));
+  for(const job of jobs) {
+    const keep=job.status==='queued' ? ['status','url','filename','outputFormat'] : ['status','downloadId','outputFormat'];
+    for(const key of Object.keys(job)) if(!keep.includes(key)) delete job[key];
+  }
+  const id=state.id;
+  for(const key of Object.keys(state)) delete state[key];
+  return Object.assign(state,{id,closed:true,jobs});
+}
+function remember(state) {
+  // A storage read can have captured its clone before the close event. Once
+  // closed, the live object (including terminal tombstones) is authoritative.
+  const current=knownStates.get(state.id);
+  if(current?.closed) return minimizeClosed(current);
+  if(state.closed || closedSessions.has(state.id) || closedTabs.has(state.workspaceTabId)) {
+    closedSessions.add(state.id);minimizeClosed(state);
+  }
+  knownStates.set(state.id,state);
+  return state;
+}
 const save = state => {
-  if(!state.closed) {
+  // Only storage writes are serialized here. Evaluate the projection when the
+  // write runs, so an older full snapshot cannot restore a closed workspace.
+  const id=state.id;
+  const next=(writes.get(id) || Promise.resolve()).catch(()=>{}).then(async()=>{
+    state=remember(state);
+    if(state.closed) {
+      if(active(state)) return chrome.storage.session.set({[PREFIX + id]:state});
+      // Keep the minimized empty object until worker suspension: a stale read
+      // must not revive an already finished queue from its previous snapshot.
+      return chrome.storage.session.remove(PREFIX + id);
+    }
     const latest=new Map((state.history || []).map(job=>[job.url,job]));
     for(const job of state.jobs) latest.set(job.url,{...job});
     state.history=[...latest.values()].slice(-500);
-  }
-  return chrome.storage.session.set({[PREFIX + state.id]:state});
+    return chrome.storage.session.set({[PREFIX + id]:state});
+  });
+  writes.set(id,next);
+  const clear=()=>{if(writes.get(id)===next)writes.delete(id);};
+  next.then(clear,clear);
+  return next;
 };
-const load = async id => { const state=(await chrome.storage.session.get(PREFIX + id))[PREFIX + id]; return state ? migrateDiscovery(state) : state; };
-const all = async () => Object.entries(await chrome.storage.session.get(null)).filter(([k]) => k.startsWith(PREFIX)).map(([,v])=>v);
+const load = async id => { const state=(await chrome.storage.session.get(PREFIX + id))[PREFIX + id]; return state ? remember(state.closed ? state : migrateDiscovery(state)) : state; };
+const all = async () => Object.entries(await chrome.storage.session.get(null)).filter(([k]) => k.startsWith(PREFIX)).map(([,v])=>remember(v));
 const active = state => summarizeJobs(state.jobs).active > 0;
+async function scrubClosedTab(tabId) {
+  closedTabs.add(tabId);
+  const closing=new Map(),pending=[];
+  const close=state=>{
+    closing.set(state.id,state);closedSessions.add(state.id);minimizeClosed(state);
+    pending.push(save(state));
+  };
+  for(const state of knownStates.values()) if(state.workspaceTabId===tabId) close(state);
+  // After worker restart there may be no in-memory state for this tab yet.
+  const stored=await chrome.storage.session.get(null);
+  for(const [key,state] of Object.entries(stored)) if(key.startsWith(PREFIX) && state.workspaceTabId===tabId && !closing.has(state.id)) {
+    close(knownStates.get(state.id) || state);
+  }
+  await Promise.all(pending);
+  return [...closing.values()];
+}
+async function closeWorkspace(state) {
+  state=remember(state);
+  state.closed=true;
+  // Persist minimization before querying Chrome or starting the next file.
+  await save(state);
+  if(active(state)) await pump(state);
+}
 async function liveTab(id) { try { return await chrome.tabs.get(id); } catch { return null; } }
 async function workspaceURL(id) {
   const tab=await liveTab(id);if(!tab)return null;
@@ -39,7 +106,7 @@ export async function openWorkspace(tab) {
     const existing = await all();
     for (const state of existing) {
       const managerURL=await workspaceURL(state.workspaceTabId);
-      if (managerURL !== chrome.runtime.getURL(`workspace.html?id=${state.id}`)) { state.closed=true;state.items=[];state.previousItems=[];state.history=[];if(active(state)) await pump(state); if(!active(state)) await chrome.storage.session.remove(PREFIX + state.id); continue; }
+      if (managerURL !== chrome.runtime.getURL(`workspace.html?id=${state.id}`)) { await closeWorkspace(state); continue; }
       if (state.tabId === tab.id && state.url === tab.url) {
         await chrome.tabs.update(state.workspaceTabId, {active:true}); return state.id;
       }
@@ -93,16 +160,18 @@ async function scan(state) {
   Object.assign(state,snapshot);
   await save(state); return state;
 }
-async function refreshJob(job) {
+async function refreshJob(job, closed=false) {
   if (!job.downloadId || !['in_progress','complete'].includes(job.status)) return;
   const [item] = await chrome.downloads.search({id:job.downloadId});
   if (!item) {
     if (job.status === 'complete') {job.exists=false;job.resultUnavailable=true;return;}
     job.status='interrupted'; job.error='ダウンロード履歴から見つかりません。再試行できます。'; return;
   }
-  job.bytesReceived = item.bytesReceived; job.totalBytes = item.totalBytes;
-  if (typeof item.filename === 'string') job.actualFilename = item.filename;
-  if (typeof item.exists === 'boolean') job.exists = item.exists;
+  if(!closed) {
+    job.bytesReceived = item.bytesReceived; job.totalBytes = item.totalBytes;
+    if (typeof item.filename === 'string') job.actualFilename = item.filename;
+    if (typeof item.exists === 'boolean') job.exists = item.exists;
+  }
   job.status = item.state;
   if (item.error) job.error = item.error;
   if (item.state === 'complete' && /^(text\/html|application\/(json|xml))/i.test(item.mime || '')) {
@@ -179,12 +248,13 @@ async function videoControl(state, message) {
 }
 
 async function pump(state) {
-  for (const job of state.jobs) await refreshJob(job);
+  state=remember(state);
+  for (const job of state.jobs) await refreshJob(job,state.closed);
   if (!state.jobs.some(j=>j.status === 'in_progress')) {
     for (const job of state.jobs.filter(j=>j.status === 'queued')) {
       try {
         job.downloadId = await chrome.downloads.download({url:job.url,filename:job.filename,conflictAction:'uniquify',saveAs:false});
-        job.status='in_progress'; await save(state); await refreshJob(job);
+        job.status='in_progress'; await save(state); await refreshJob(job,state.closed);
         if (job.status === 'in_progress') break;
       } catch (error) { job.status='interrupted'; job.error=publicError(error); }
     }
@@ -217,7 +287,7 @@ chrome.runtime.onMessage.addListener((message,sender,respond) => {
   if (!sender.url?.startsWith(chrome.runtime.getURL('workspace.html')) || sender.id !== chrome.runtime.id) return;
   serial(async () => {
     const state = await load(message.sessionId);
-    if (!state || sender.tab?.id !== state.workspaceTabId) throw new Error('作業情報が見つかりません。元ページから拡張を押し直してください。');
+    if (!state || state.closed || sender.tab?.id !== state.workspaceTabId) throw new Error('作業情報が見つかりません。元ページから拡張を押し直してください。');
     switch(message.type) {
       case 'get': return pump(state);
       case 'scan': return scan(state);
@@ -295,15 +365,15 @@ chrome.runtime.onMessage.addListener((message,sender,respond) => {
 // Register listeners at worker startup; storage keeps download IDs across suspension.
 chrome.downloads.onChanged.addListener(delta => {
   if (!delta.state && !delta.error) return;
-  serial(async()=> {for(const state of await all()) if(state.jobs.some(j=>j.downloadId === delta.id)) { await pump(state); if(state.closed && !active(state)) await chrome.storage.session.remove(PREFIX + state.id); }}).catch(()=>{});
+  serial(async()=> {for(const state of await all()) if(state.jobs.some(j=>j.downloadId === delta.id)) await pump(state);}).catch(()=>{});
 });
 chrome.tabs.onRemoved.addListener(tabId => {
+  const closed=scrubClosedTab(tabId);
+  // Handle rejection immediately while the mutation queue may still be busy.
+  closed.catch(()=>{});
   serial(async()=> {
     const lock = (await chrome.storage.session.get('captureLock')).captureLock;
     if(lock?.tabId === tabId) await chrome.storage.session.remove('captureLock');
-    for(const state of await all()) if(state.workspaceTabId === tabId) {
-      if(active(state)) { state.closed=true;state.items=[];state.previousItems=[];state.notices=[];state.history=[];await save(state); }
-      else await chrome.storage.session.remove(PREFIX + state.id);
-    }
+    for(const state of await closed) if(active(state)) await pump(state);
   }).catch(()=>{});
 });
