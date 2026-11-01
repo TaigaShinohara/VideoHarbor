@@ -88,5 +88,5 @@ Google公式[Chrome for Testing milestones](https://googlechromelabs.github.io/c
 
 - PR #11: MP4/HLS計算量とmetadata、merge `44a35f23556837398186dfa3f0518db016267154`。
 - PR #12: Workerとoperation取消、merge `e0f8d7216d490571f23d1654eecd0e483acb963f`。
-- [PR #13](https://github.com/TaigaShinohara/VideoHarbor/pull/13): Chrome116の状態保持、追加QA・境界検証と文書。マージ結果と最終commitはPRの記録を参照する。
+- PR #13: Chrome116の状態保持、追加QA・境界検証と文書。マージ結果と最終commitはリポジトリのPR記録を参照する。
 - 元P2は、同じ攻撃構造の受理/正しい拒否、合法入力、実Worker/実保存の再検証で確認する。文書を追加しただけで修正済みとは扱わない。
