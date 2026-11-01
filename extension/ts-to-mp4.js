@@ -20,9 +20,11 @@ const matrix = u32(65536,0,0,0,65536,0,0,0,1073741824);
 const crcTable = Uint32Array.from({length:256},(_,i)=>{let crc=i<<24;for(let bit=0;bit<8;bit++)crc=crc&0x80000000 ? (crc<<1)^0x04c11db7 : crc<<1;return crc>>>0;});
 function crcOK(bytes) {let crc=0xffffffff;for(const value of bytes)crc=((crc<<8)^crcTable[((crc>>>24)^value)&255])>>>0;return crc===0;}
 function descriptors(bytes,start,end) {for(let at=start;at<end;){if(end-at<2||at+2+bytes[at+1]>end)fail('PMTの設定が途中で終わっています。');if(bytes[at]===9)fail('暗号化・保護されたTSには対応していません。');at+=2+bytes[at+1];}}
-function rbsp(bytes) {
+function rbsp(bytes,limit=bytes.length) {
   const result=[];
-  for(let i=0;i<bytes.length;i++){if(i>=2&&bytes[i]===3&&bytes[i-1]===0&&bytes[i-2]===0){if(i+1>=bytes.length||bytes[i+1]>3)fail('AVCのエスケープが不正です。');continue;}result.push(bytes[i]);}
+  // Limit parsing/allocation without hiding the original byte after an escape.
+  // A prefix boundary is not the end of the NAL; a real truncated escape is.
+  for(let i=0;i<Math.min(bytes.length,limit);i++){if(i>=2&&bytes[i]===3&&bytes[i-1]===0&&bytes[i-2]===0){if(i+1>=bytes.length||bytes[i+1]>3)fail('AVCのエスケープが不正です。');continue;}result.push(bytes[i]);}
   return new Uint8Array(result);
 }
 class Bits {
@@ -117,7 +119,7 @@ function demux(bytes,maxBytes) {
       if(nal[0]&128)fail('AVC NALヘッダーが不正です。');const type=nal[0]&31;
       if(type===7||type===8){if(nal.length>65535)fail('AVCの初期化データが大きすぎます。');const name=type===7 ? 'sps' : 'pps';if(video[name]&&!same(video[name],nal))fail('途中でAVC設定が変わるTSには未対応です。');video[name]=nal.slice();if(type===7)video.info=spsInfo(nal);else video.ppsInfo=ppsInfo(nal);continue;}
       if(type===9){aud++;continue;}if(type===10||type===11)continue;
-      if(type===1||type===5){const bits=new Bits(rbsp(nal.subarray(1,Math.min(nal.length,64))));const first=bits.ue(),slice=bits.ue(),pps=bits.ue();if(slice>9||!video.ppsInfo||pps!==video.ppsInfo.id)fail('AVCスライスの設定が不明です。');if(first===0)starts++;if((slices>0&&key!==(type===5)))fail('複数のAVC画像が1つのPESに入っています。');key=type===5;slices++;}
+      if(type===1||type===5){const bits=new Bits(rbsp(nal.subarray(1),63));const first=bits.ue(),slice=bits.ue(),pps=bits.ue();if(slice>9||!video.ppsInfo||pps!==video.ppsInfo.id)fail('AVCスライスの設定が不明です。');if(first===0)starts++;if((slices>0&&key!==(type===5)))fail('複数のAVC画像が1つのPESに入っています。');key=type===5;slices++;}
       else if(type!==6&&type!==12)fail('未対応のAVC NAL構成です。');
       parts.push(u32(nal.length),nal);
     }
