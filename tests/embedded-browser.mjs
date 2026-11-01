@@ -8,6 +8,7 @@ import {fileURLToPath} from 'node:url';
 import {createServer} from 'node:http';
 import {spawnSync} from 'node:child_process';
 import {launchTestExtension} from './chrome-runtime.mjs';
+import {candidateLocator,candidateCount,assertPrivateDOM} from './privacy-browser-helpers.mjs';
 const {chromium}=await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const repo=fileURLToPath(new URL('../',import.meta.url));
 const scratch=await mkdtemp(join(tmpdir(),'videoharbor-embedded-qa-'));
@@ -15,6 +16,7 @@ const extension=join(scratch,'extension');
 let context,server;
 let slowSegments=false;
 const requests=new Map();
+const requestedResources=new Set();
 const errors=[];
 
 function command(binary,args) {
@@ -91,9 +93,9 @@ async function openFixture(profile,manifest,origin) {
     args:['--autoplay-policy=no-user-gesture-required','--no-first-run'],
   });
   context=runtime.context;const {worker}=runtime;
-  const page=await context.newPage();await page.goto(origin);
+  const page=await context.newPage();await page.goto(origin+'/?document=DOCUMENT_QUERY_FIXTURE');
   await page.waitForFunction(()=>document.querySelector('#cross-frame')?.contentWindow && document.readyState==='complete');
-  const tab=await worker.evaluate(async origin=>(await chrome.tabs.query({})).find(t=>t.url===origin+'/'),origin);
+  const tab=await worker.evaluate(async origin=>(await chrome.tabs.query({})).find(t=>t.url===origin+'/?document=DOCUMENT_QUERY_FIXTURE'),origin);
   assert.ok(tab,'source fixture tab exists');
   const [manager]=await Promise.all([context.waitForEvent('page'),worker.evaluate(tab=>globalThis.__openWorkspace(tab),tab)]);
   manager.on('pageerror',e=>errors.push(e.message));
@@ -105,20 +107,20 @@ async function openFixture(profile,manifest,origin) {
   await session.send('Browser.setDownloadBehavior',{behavior:'default',eventsEnabled:true,...(targetInfo.browserContextId&&!runtime.legacy ? {browserContextId:targetInfo.browserContextId} : {})});
   return {page,manager,worker};
 }
-const mediaButton=(manager,url)=>manager.locator(`button.media-save[data-url=${JSON.stringify(url)}]`);
-const saveButton=(manager,url)=>manager.locator(`button.media-save[data-url=${JSON.stringify(url)}],button.direct-save[data-url=${JSON.stringify(url)}]`);
-const mediaStatus=(manager,url)=>manager.locator(`.item-status[data-url=${JSON.stringify(url)}]`);
-const outputFormat=(manager,url)=>manager.locator(`select.output-format[data-url=${JSON.stringify(url)}]`);
+const mediaButton=(manager,url)=>candidateLocator(manager,url,'button.media-save');
+const saveButton=(manager,url)=>candidateLocator(manager,url,'button.media-save,button.direct-save');
+const mediaStatus=(manager,url)=>candidateLocator(manager,url,'.item-status');
+const outputFormat=(manager,url)=>candidateLocator(manager,url,'select.output-format');
 async function waitStatus(manager,url,status) {
-  await manager.waitForFunction(({url,status})=>[...document.querySelectorAll('.item-status')].some(el=>el.dataset.url===url && el.dataset.state===status),{url,status},{timeout:15000});
+  await (await candidateLocator(manager,url,`.item-status[data-state="${status}"]`)).waitFor({state:'attached',timeout:15000});
 }
 async function saveAndDecode(manager,url,name,format,{standaloneHLS=false,selectedFormat}={}) {
-  if(selectedFormat)await outputFormat(manager,url).selectOption(selectedFormat);
+  if(selectedFormat)await (await outputFormat(manager,url)).selectOption(selectedFormat);
   const previous=await manager.evaluate(async()=> (await chrome.downloads.search({})).map(item=>item.id));
-  await saveButton(manager,url).click();
+  await (await saveButton(manager,url)).click();
   await waitStatus(manager,url,'complete');
-  if(standaloneHLS)assert.match(await mediaStatus(manager,url).textContent(),/音声の有無は未確認/,'standalone HLS file completion does not claim verified audio');
-  else if(url.endsWith('.mpd') || url.includes('/split/'))assert.doesNotMatch(await mediaStatus(manager,url).textContent(),/音声の有無は未確認/,'an explicitly selected audio/video manifest is distinct from a standalone HLS child list');
+  if(standaloneHLS)assert.match(await (await mediaStatus(manager,url)).textContent(),/音声の有無は未確認/,'standalone HLS file completion does not claim verified audio');
+  else if(url.endsWith('.mpd') || url.includes('/split/'))assert.doesNotMatch(await (await mediaStatus(manager,url)).textContent(),/音声の有無は未確認/,'an explicitly selected audio/video manifest is distinct from a standalone HLS child list');
   const saved=await manager.evaluate(async previous=>(await chrome.downloads.search({})).find(item=>!previous.includes(item.id)),previous);
   assert.ok(saved,'the save started a real Chrome download');
   assert.equal(saved.state,'complete','Chrome completed the actual download');
@@ -145,7 +147,11 @@ try {
   server=createServer(async(req,res)=>{
     try {
       const pathname=new URL(req.url,'http://fixture.test').pathname;
+      requestedResources.add(req.url);
       requests.set(pathname,(requests.get(pathname)||0)+1);
+      if(pathname==='/OPAQUE_PATH_FIXTURE.mp4' && !['QUERY_FIXTURE_1','QUERY_FIXTURE_2'].includes(new URL(req.url,'http://fixture.test').searchParams.get('UnKnOwN'))) {
+        res.statusCode=403;return res.end('Synthetic signature mismatch');
+      }
       if(pathname==='/same-frame' || pathname==='/cross-frame') {
         const name=pathname==='/same-frame' ? 'same' : 'cross';
         res.setHeader('Content-Type','text/html');return res.end(`<video data-src="/${name}.mp4"></video>`);
@@ -176,7 +182,11 @@ try {
         <iframe srcdoc="<video data-src='${origin}/srcdoc.mp4'></video>"></iframe>
         <iframe src="/iframe-video.mp4"></iframe>
         <a href="/unsupported.webm" type="video/webm">Known non-MP4 format</a>
+        <a href="/OPAQUE_PATH_FIXTURE.mp4?UnKnOwN=QUERY_FIXTURE_1#HASH_FIXTURE">Signed source one</a>
+        <a href="/OPAQUE_PATH_FIXTURE.mp4?UnKnOwN=QUERY_FIXTURE_2">Signed source two</a>
         <a href="/ts/index.m3u8">TS HLS</a><a href="/mp4/index.m3u8">fMP4 HLS</a>
+        <a href="/mp4/index.m3u8?CustomAuthorization=QUERY_FIXTURE_HLS">Signed HLS</a>
+        <a href="/dash/manifest.mpd?CustomAuthorization=QUERY_FIXTURE_DASH">Signed DASH</a>
         <a href="/dash/manifest.mpd">DASH separate audio/video</a><a href="/split/master.m3u8">HLS separate audio/video</a></body></html>`);
     }catch(error){res.statusCode=500;res.end('Synthetic fixture error');}
   });
@@ -184,19 +194,35 @@ try {
   origin=`http://127.0.0.1:${server.address().port}`;other=`http://localhost:${server.address().port}`;
   const first=await openFixture('limited',manifest,origin);
   const {page,manager}=first;
-  for(const filename of ['lazy.mp4','metadata.mp4','structured.mp4','same.mp4','srcdoc.mp4','inline-player.mp4','iframe-video.mp4'])assert.equal(await manager.locator('#direct-list .video-card').filter({hasText:filename}).count(),1,`${filename} is discovered`);
-  assert.equal(await manager.locator('#direct-list .video-card').filter({hasText:'cross.mp4'}).count(),0,'ungranted cross-origin iframe is not inspected');
+  for(const filename of ['lazy.mp4','metadata.mp4','structured.mp4','same.mp4','srcdoc.mp4','inline-player.mp4','iframe-video.mp4'])assert.equal(await candidateCount(manager,origin+'/'+filename),1,`${filename} is discovered`);
+  assert.equal(await candidateCount(manager,other+'/cross.mp4'),0,'ungranted cross-origin iframe is not inspected');
   assert.equal(await manager.locator('.frame-permission').count(),1,'the missing iframe origin has a scoped permission action');
   const realGrants=await manager.evaluate(()=>chrome.permissions.getAll());
   assert.ok(!realGrants.origins.some(x=>x.includes('localhost')),'localhost host access has not been granted');
   assert.ok(!realGrants.origins.some(x=>x==='http://*/*' || x==='https://*/*'),'no wildcard host grant');
 
   const directMP4=origin+'/lazy.mp4',unsupportedWebM=origin+'/unsupported.webm';
-  assert.equal(await outputFormat(manager,directMP4).inputValue(),'mp4','known MP4 candidates initially prefer MP4');
-  assert.equal(await outputFormat(manager,unsupportedWebM).inputValue(),'auto','known WebM keeps its original container');
-  assert.equal(await outputFormat(manager,unsupportedWebM).locator('option[value="mp4"]').isDisabled(),true,'unsupported WebM-to-MP4 conversion cannot be selected');
-  assert.match(await manager.locator('.video-card').filter({hasText:'unsupported.webm'}).locator('.format-hint').textContent(),/変換には対応していません/);
+  const signedOne=origin+'/OPAQUE_PATH_FIXTURE.mp4?UnKnOwN=QUERY_FIXTURE_1',signedTwo=origin+'/OPAQUE_PATH_FIXTURE.mp4?UnKnOwN=QUERY_FIXTURE_2';
+  const privacyMarkers=['OPAQUE_PATH_FIXTURE','QUERY_FIXTURE','HASH_FIXTURE','DOCUMENT_QUERY_FIXTURE'];
+  await assertPrivateDOM(manager,privacyMarkers);
+  assert.equal(await candidateCount(manager,signedOne),1,'the first signed resource is identified without rendering its source');
+  assert.equal(await candidateCount(manager,signedTwo),1,'different query identities retain independent save cards');
+  const signedId=await (await outputFormat(manager,signedOne)).getAttribute('data-candidate-id');
+  await (await outputFormat(manager,signedOne)).selectOption('auto');
+  await manager.locator('#scan').click();await manager.waitForFunction(()=>!document.querySelector('#scan').disabled);
+  assert.equal(await (await outputFormat(manager,signedOne)).getAttribute('data-candidate-id'),signedId,'an unchanged resource keeps its opaque ID across scans');
+  assert.equal(await (await outputFormat(manager,signedOne)).inputValue(),'auto','query-specific output preference survives a scan');
+  assert.equal(await (await outputFormat(manager,signedTwo)).inputValue(),'mp4','the other query variant keeps its own output preference');
+  await assertPrivateDOM(manager,privacyMarkers);
+  assert.equal(await (await outputFormat(manager,directMP4)).inputValue(),'mp4','known MP4 candidates initially prefer MP4');
+  assert.equal(await (await outputFormat(manager,unsupportedWebM)).inputValue(),'auto','known WebM keeps its original container');
+  assert.equal(await (await outputFormat(manager,unsupportedWebM)).locator('option[value="mp4"]').isDisabled(),true,'unsupported WebM-to-MP4 conversion cannot be selected');
+  assert.match(await (await candidateLocator(manager,unsupportedWebM)).locator('.format-hint').textContent(),/変換には対応していません/);
   await saveAndDecode(manager,directMP4,'saved-direct.mp4','mp4',{selectedFormat:'mp4'});
+  await saveAndDecode(manager,signedOne,'saved-signed-one.mp4','mp4',{selectedFormat:'auto'});
+  await saveAndDecode(manager,signedTwo,'saved-signed-two.mp4','mp4',{selectedFormat:'mp4'});
+  for(const url of [signedOne,signedTwo])assert.equal(requestedResources.has(new URL(url).pathname+new URL(url).search),true,'direct download uses the unchanged complete signed URL');
+  await assertPrivateDOM(manager,privacyMarkers);
 
   // Simulate declining only the browser confirmation boundary. The actual scan,
   // injection, HLS fetching, assembly, and download implementations remain intact.
@@ -215,7 +241,7 @@ try {
   await manager.locator('.frame-permission').click();
   await manager.waitForFunction(()=>document.querySelector('#error').textContent.includes('許可されませんでした'));
   await manager.waitForFunction(()=>document.activeElement?.classList.contains('frame-permission'));
-  assert.equal(await manager.locator('#direct-list .video-card').filter({hasText:'cross.mp4'}).count(),0,'decline never inspects cross-origin content');
+  assert.equal(await candidateCount(manager,other+'/cross.mp4'),0,'decline never inspects cross-origin content');
   await manager.evaluate(()=>{
     window.__permissionAccept=true;
     const contains=chrome.permissions.contains.bind(chrome.permissions);
@@ -232,15 +258,15 @@ try {
   await manager.evaluate(()=>{window.__permissionAccept=false;});
 
   const tsURL=origin+'/ts/index.m3u8';
-  assert.equal(await outputFormat(manager,tsURL).inputValue(),'mp4','HLS initially prefers actual MP4 output');
-  await outputFormat(manager,tsURL).selectOption('auto');
+  assert.equal(await (await outputFormat(manager,tsURL)).inputValue(),'mp4','HLS initially prefers actual MP4 output');
+  await (await outputFormat(manager,tsURL)).selectOption('auto');
   const beforeRequests=requests.get('/ts/index.m3u8')||0;
   await manager.evaluate(()=>{window.__forceMissing=true;});
-  await mediaButton(manager,tsURL).click();await waitStatus(manager,tsURL,'permission');
+  await (await mediaButton(manager,tsURL)).click();await waitStatus(manager,tsURL,'permission');
   assert.equal(requests.get('/ts/index.m3u8')||0,beforeRequests,'HLS host is checked before fetching the manifest');
-  await mediaButton(manager,tsURL).click();await waitStatus(manager,tsURL,'interrupted');
-  assert.match(await mediaStatus(manager,tsURL).textContent(),/許可されませんでした/);
-  await mediaButton(manager,tsURL).click();await waitStatus(manager,tsURL,'permission');
+  await (await mediaButton(manager,tsURL)).click();await waitStatus(manager,tsURL,'interrupted');
+  assert.match(await (await mediaStatus(manager,tsURL)).textContent(),/許可されませんでした/);
+  await (await mediaButton(manager,tsURL)).click();await waitStatus(manager,tsURL,'permission');
   await manager.evaluate(()=>{window.__permissionAccept=true;});
   await saveAndDecode(manager,tsURL,'saved-hls.ts','mpegts',{standaloneHLS:true,selectedFormat:'auto'});
   permissionRequests=await manager.evaluate(()=>window.__permissionRequests);
@@ -251,15 +277,20 @@ try {
   await saveAndDecode(manager,origin+'/mp4/index.m3u8','saved-hls.mp4','mp4',{standaloneHLS:true});
   await saveAndDecode(manager,origin+'/dash/manifest.mpd','saved-dash.mp4','mp4');
   await saveAndDecode(manager,origin+'/split/master.m3u8','saved-split-hls.mp4','mp4');
+  const signedHLS=origin+'/mp4/index.m3u8?CustomAuthorization=QUERY_FIXTURE_HLS',signedDASH=origin+'/dash/manifest.mpd?CustomAuthorization=QUERY_FIXTURE_DASH';
+  await saveAndDecode(manager,signedHLS,'saved-signed-hls.mp4','mp4',{standaloneHLS:true});
+  await saveAndDecode(manager,signedDASH,'saved-signed-dash.mp4','mp4');
+  for(const url of [signedHLS,signedDASH])assert.equal(requestedResources.has(new URL(url).pathname+new URL(url).search),true,'manifest fetch uses the unchanged complete signed URL');
+  await assertPrivateDOM(manager,privacyMarkers);
   await saveAndDecode(manager,tsURL,'saved-ts-remux.mp4','mp4',{standaloneHLS:true,selectedFormat:'mp4'});
   // Stop stays reachable even while a long candidate list is scrolled elsewhere.
   slowSegments=true;
   const downloadsBeforeStop=await manager.evaluate(async()=> (await chrome.downloads.search({})).length);
   await manager.setViewportSize({width:360,height:800});
-  await mediaButton(manager,tsURL).click();await waitStatus(manager,tsURL,'fetching');
+  await (await mediaButton(manager,tsURL)).click();await waitStatus(manager,tsURL,'fetching');
   assert.ok(await manager.locator('.output-format').evaluateAll(controls=>controls.every(control=>control.disabled)),'all candidate format choices freeze during a save');
-  await outputFormat(manager,tsURL).evaluate(control=>{control.value='auto';control.dispatchEvent(new Event('change',{bubbles:true}));});
-  assert.equal(await outputFormat(manager,tsURL).inputValue(),'mp4','a scripted change cannot alter the in-flight format snapshot');
+  await (await outputFormat(manager,tsURL)).evaluate(control=>{control.value='auto';control.dispatchEvent(new Event('change',{bubbles:true}));});
+  assert.equal(await (await outputFormat(manager,tsURL)).inputValue(),'mp4','a scripted change cannot alter the in-flight format snapshot');
   await manager.evaluate(()=>scrollTo(0,0));
   assert.ok(await manager.locator('#media-cancel').evaluate(el=>{const r=el.getBoundingClientRect();return r.top>=0 && r.bottom<=innerHeight;}),'HLS Stop remains inside the viewport after scrolling');
   await manager.locator('#media-cancel').click();await waitStatus(manager,tsURL,'interrupted');
@@ -272,9 +303,10 @@ try {
     const url=URL.createObjectURL(new Blob([data],{type:'video/mp4'}));
     const video=document.createElement('video');video.src=url;document.body.append(video);return url;
   });
-  await manager.locator('#scan').click();await mediaButton(manager,blobURL).waitFor();
-  assert.equal(await outputFormat(manager,blobURL).inputValue(),'auto','a blob without DOM MIME starts with the original format');
+  await manager.locator('#scan').click();await (await mediaButton(manager,blobURL)).waitFor();
+  assert.equal(await (await outputFormat(manager,blobURL)).inputValue(),'auto','a blob without DOM MIME starts with the original format');
   await saveAndDecode(manager,blobURL,'saved-page-blob.mp4','mp4',{selectedFormat:'mp4'});
+  await assertPrivateDOM(manager,[...privacyMarkers,blobURL]);
   // The source DOM does not identify the blob container. An actual WebM Blob
   // must still fail the runtime MIME check when MP4 is requested.
   const webmBlobURL=await page.evaluate(async()=>{
@@ -286,22 +318,22 @@ try {
     const url=URL.createObjectURL(new Blob(chunks,{type:'video/webm'}));
     const video=document.createElement('video');video.src=url;document.body.append(video);return url;
   });
-  await manager.locator('#scan').click();await mediaButton(manager,webmBlobURL).waitFor();
-  assert.equal(await outputFormat(manager,webmBlobURL).inputValue(),'auto');
-  assert.equal(await outputFormat(manager,webmBlobURL).locator('option[value="mp4"]').isDisabled(),false,'unknown blob MIME can be inspected at runtime');
-  await outputFormat(manager,webmBlobURL).selectOption('mp4');
+  await manager.locator('#scan').click();await (await mediaButton(manager,webmBlobURL)).waitFor();
+  assert.equal(await (await outputFormat(manager,webmBlobURL)).inputValue(),'auto');
+  assert.equal(await (await outputFormat(manager,webmBlobURL)).locator('option[value="mp4"]').isDisabled(),false,'unknown blob MIME can be inspected at runtime');
+  await (await outputFormat(manager,webmBlobURL)).selectOption('mp4');
   const beforeRejectedFormat=await manager.evaluate(async()=> (await chrome.downloads.search({})).length);
-  await mediaButton(manager,webmBlobURL).click();await waitStatus(manager,webmBlobURL,'interrupted');
-  assert.match(await mediaStatus(manager,webmBlobURL).textContent(),/MP4ではありません/);
+  await (await mediaButton(manager,webmBlobURL)).click();await waitStatus(manager,webmBlobURL,'interrupted');
+  assert.match(await (await mediaStatus(manager,webmBlobURL)).textContent(),/MP4ではありません/);
   assert.equal(await manager.evaluate(async()=> (await chrome.downloads.search({})).length),beforeRejectedFormat,'WebM bytes are not mislabeled or downloaded as MP4');
   const mseURL=await page.evaluate(()=>{
     window.__mse=new MediaSource();const url=URL.createObjectURL(window.__mse);
     const video=document.createElement('video');video.src=url;document.body.append(video);return url;
   });
-  await manager.locator('#scan').click();await mediaButton(manager,mseURL).waitFor();
+  await manager.locator('#scan').click();await (await mediaButton(manager,mseURL)).waitFor();
   const downloadCount=await manager.evaluate(async()=> (await chrome.downloads.search({})).length);
-  await mediaButton(manager,mseURL).click();await waitStatus(manager,mseURL,'interrupted');
-  assert.match(await mediaStatus(manager,mseURL).textContent(),/blob|ページ内|分割配信|取得できません/);
+  await (await mediaButton(manager,mseURL)).click();await waitStatus(manager,mseURL,'interrupted');
+  assert.match(await (await mediaStatus(manager,mseURL)).textContent(),/blob|ページ内|分割配信|取得できません/);
   assert.equal(await manager.evaluate(async()=> (await chrome.downloads.search({})).length),downloadCount,'MediaSource blob is not falsely downloaded as a video file');
   await context.close();context=null;
 
@@ -309,7 +341,7 @@ try {
   // profile. This is test-copy manifest permission, not a native prompt test.
   manifest.host_permissions=['http://127.0.0.1/*','http://localhost/*'];
   const granted=await openFixture('local-frame-granted',manifest,origin);
-  assert.equal(await granted.manager.locator('#direct-list .video-card').filter({hasText:'cross.mp4'}).count(),1,'granted cross-origin iframe is collected through actual allFrames injection');
+  assert.equal(await candidateCount(granted.manager,other+'/cross.mp4'),1,'granted cross-origin iframe is collected through actual allFrames injection');
   assert.equal(await granted.manager.locator('.frame-permission').count(),0,'already permitted local frames do not request access again');
   await granted.manager.setViewportSize({width:360,height:800});
   assert.ok(await granted.manager.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'embedded candidate controls fit a narrow viewport');

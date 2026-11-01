@@ -7,6 +7,7 @@ import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createServer} from 'node:http';
 import {launchTestExtension} from './chrome-runtime.mjs';
+import {candidateLocator,candidateCount,assertPrivateDOM} from './privacy-browser-helpers.mjs';
 const {chromium}=await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const repo=fileURLToPath(new URL('../',import.meta.url));
 const scratch=await mkdtemp(join(tmpdir(),'media-extension-qa-'));
@@ -94,12 +95,13 @@ try {
       }
       await manager.setViewportSize(previous);await manager.evaluate(({x,y})=>scrollTo(x,y),scroll);
     };
+    await assertPrivateDOM(manager,['/clip.webm','/variant.webm','/stream.m3u8','alternate=1']);
     assert.ok(await manager.locator('.direct-save').count()>=1);assert.ok(await manager.locator('#unsupported-count').textContent());
-    assert.equal(await manager.locator(`.direct-save[data-url="${origin}/clip.webm"]`).count(),1,'one complete resource URL has one save card across visible video, hidden duplicate and JSON configuration');
+    assert.equal(await candidateCount(manager,origin+'/clip.webm','.direct-save'),1,'one complete resource URL has one save card across visible video, hidden duplicate and JSON configuration');
     assert.equal(await manager.getByRole('heading',{name:'非表示の青いカップ',exact:true}).count(),0,'the hidden duplicate does not create another video group');
     assert.equal(await manager.getByRole('heading',{name:'設定内の青いカップ',exact:true}).count(),0,'the JSON occurrence does not create another video group');
-    const sameName=manager.locator('#direct-list .video-card').filter({hasText:'clip.webm'});
-    assert.equal(await sameName.count(),2,'distinct URLs can have the same file name');
+    const sameName=(await candidateLocator(manager,origin+'/clip.webm')).or(await candidateLocator(manager,origin+'/clip.webm?alternate=1'));
+    assert.equal(await sameName.count(),2,'distinct complete URLs keep independently selectable candidates');
     for(const card of await sameName.all()) {
       const details=card.locator('.url-detail'),metadata=details.locator('.meta').first();
       assert.equal(await details.getAttribute('open'),null);
@@ -127,7 +129,7 @@ try {
     await blueGroup.locator('.source-alternatives .show-file').click();
     assert.equal(await worker.evaluate(()=>globalThis.__shownDownloads.length),1,'confirmed output has a folder action using its own download ID');
     await blueGroup.locator('.source-alternatives > summary').click();
-    const hlsFormat=manager.locator('.video-card').filter({hasText:'stream.m3u8'}).locator('.output-format');
+    const hlsFormat=(await candidateLocator(manager,origin+'/stream.m3u8')).locator('.output-format');
     await hlsFormat.selectOption('auto');
     await page.evaluate(()=>{
       document.querySelector('#red').remove();document.querySelector('#blue').remove();
@@ -135,7 +137,7 @@ try {
     });
     await manager.locator('#scan').click();await manager.waitForFunction(()=>!document.querySelector('#scan').disabled);
     assert.equal(await manager.getByRole('heading',{name:'赤いカップ',exact:true}).count(),0,'a removed page video is no longer described as current');
-    assert.equal(await manager.locator(`.direct-save[data-url="${origin}/clip.webm"]`).count(),1,'rescan keeps the shared resource deduplicated after its original player is removed');
+    assert.equal(await candidateCount(manager,origin+'/clip.webm','.direct-save'),1,'rescan keeps the shared resource deduplicated after its original player is removed');
     const replacementGroup=manager.locator('.video-group').filter({has:manager.getByRole('heading',{name:'再表示した青いカップ',exact:true})});
     assert.equal(await replacementGroup.count(),1,'the newly visible player supplies the current title');
     assert.equal(await replacementGroup.locator('.video-card').count(),2,'the replacement player retains its distinct alternate source');

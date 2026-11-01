@@ -5,6 +5,7 @@ import { outputOptions, validateOutputFormat } from './output-format.js';
 import { renderVideoGroups } from './workspace-videos.js';
 import { RecordingResultView } from './workspace-result.js';
 import { prepareVideoCapture } from './video-capture.js';
+import {resources,candidateLabel,videoReferences,referenceKey,videoReferenceId,displayText} from './presentation.js';
 const KIND = 'videos';
 const $ = id => document.getElementById(id);
 const sessionId = new URL(location.href).searchParams.get('id');
@@ -15,11 +16,13 @@ let recordingResultView = null;
 let initialRecorderMessage = '', previousRecordingPhase = '';
 const handledCompletions = new Set();
 const formatSelections=new Map();
-const videoKey = ref => JSON.stringify([ref.documentId || ref.frameId || 0,ref.frameToken,ref.elementToken,ref.documentURL]);
+const videoKey = videoReferenceId;
+const elementURL = node => resources.key(node.dataset.candidateId);
 const selectedVideo = () => (state?.videoElements || []).find(ref => videoKey(ref) === $('record-video').value);
 function updateVideoChoices() {
   const select=$('record-video'), current=select.value;
-  const refs=state.videoElements || [], options=[['','動画を選んでください'],...refs.map((ref,index)=>[videoKey(ref),`${ref.title || `ページ上の動画 ${index+1}`}${ref.playing ? ' · 再生中' : ''}`])];
+  videoReferences.retain((state.videoElements || []).map(referenceKey));
+  const refs=state.videoElements || [], options=[['','動画を選んでください'],...refs.map((ref,index)=>[videoKey(ref),`${displayText(ref.title) || `ページ上の動画 ${index+1}`}${ref.playing ? ' · 再生中' : ''}`])];
   if(JSON.stringify([...select.options].map(option=>[option.value,option.textContent]))!==JSON.stringify(options)) {
     select.replaceChildren(...options.map(([value,text])=>{const option=element('option','',text);option.value=value;return option;}));
     select.value=refs.some(ref=>videoKey(ref)===current) ? current : '';
@@ -65,7 +68,7 @@ function jobLabel(job) {
   if (job.status === 'queued') return `順番待ち${suffix}`;
   return `保存中${suffix} · ${formatBytes(job.bytesReceived)}${job.totalBytes > 0 ? ' / '+formatBytes(job.totalBytes) : ''}`;
 }
-function statusElement(item) { const span = element('span','item-status',jobLabel(jobFor(item.url))); span.dataset.url=item.url;span.dataset.state=jobFor(item.url)?.status || '';  return span; }
+function statusElement(item) { const span = element('span','item-status',jobLabel(jobFor(item.url))); span.dataset.candidateId=resources.id(item.url);span.dataset.state=jobFor(item.url)?.status || '';  return span; }
 function applyState(next) {
   state = next;
   for(const job of state.jobs) {
@@ -73,8 +76,8 @@ function applyState(next) {
     if(job.status === 'complete' && !handledCompletions.has(key)) { selected.delete(job.url); handledCompletions.add(key); }
   }
   updateSummary();
-  for(const el of document.querySelectorAll('.item-status')) { const job=jobFor(el.dataset.url);el.textContent=jobLabel(job);el.dataset.state=job?.status || ''; }
-  for(const checkbox of document.querySelectorAll('.image-select')) checkbox.checked=selected.has(checkbox.dataset.url);
+  for(const el of document.querySelectorAll('.item-status')) { const job=jobFor(elementURL(el));el.textContent=jobLabel(job);el.dataset.state=job?.status || ''; }
+  for(const checkbox of document.querySelectorAll('.image-select')) checkbox.checked=selected.has(elementURL(checkbox));
   updateOutputResults();
 }
 function updateSummary() {
@@ -110,15 +113,15 @@ function updateMediaUI() {
     $('media-progress').textContent=formatBytes(current.bytesReceived)+(current.total ? ` · ${current.completed || 0}/${current.total}区間` : '');
   }
   for(const el of document.querySelectorAll('.item-status')) {
-    const job=jobFor(el.dataset.url);el.textContent=jobLabel(job);el.dataset.state=job?.status || '';
+    const job=jobFor(elementURL(el));el.textContent=jobLabel(job);el.dataset.state=job?.status || '';
   }
   for(const el of document.querySelectorAll('.media-save')) {
-    const job=mediaSaver.status(el.dataset.url);
+    const url=elementURL(el),job=mediaSaver.status(url);
     el.textContent=job?.status==='permission' ? '配信元を許可して保存' : job?.blob ? 'ファイル保存を再試行' : '保存';
-    el.setAttribute('aria-label',`${el.dataset.displayName || fileLabel(el.dataset.url)} · ${fileLabel(el.dataset.url)}${job?.status==='permission' ? 'の配信元を許可して保存' : 'を保存'}`);
+    el.setAttribute('aria-label',`${el.dataset.displayName || candidateLabel(url)} · ${candidateLabel(url)}${job?.status==='permission' ? 'の配信元を許可して保存' : 'を保存'}`);
   }
   for(const el of document.querySelectorAll('.permission-sites')) {
-    const origins=mediaSaver.status(el.dataset.url)?.origins;
+    const origins=mediaSaver.status(elementURL(el))?.origins;
     el.hidden=!origins?.length;el.textContent=origins?.length ? `アクセスを求めるサイト: ${origins.join('、')}` : '';
   }
   updateOutputResults();
@@ -140,7 +143,7 @@ function outputName(job) {
 function updateOutputResults() {
   if(!state)return;
   for(const container of document.querySelectorAll('.candidate-result')) {
-    const job=jobFor(container.dataset.url),key=job?.status==='complete' ? `${job.downloadId}:${outputName(job)}:${job.exists}` : '';
+    const job=jobFor(elementURL(container)),key=job?.status==='complete' ? `${job.downloadId}:${outputName(job)}:${job.exists}` : '';
     if(container.dataset.resultKey===key)continue;
     container.dataset.resultKey=key;container.replaceChildren();
     if(key) {
@@ -149,9 +152,9 @@ function updateOutputResults() {
     }
   }
   for(const button of document.querySelectorAll('.direct-save,.media-save')) {
-    const saved=jobFor(button.dataset.url)?.status==='complete';
+    const url=elementURL(button),saved=jobFor(url)?.status==='complete';
     button.classList.toggle('primary',!saved);button.classList.toggle('secondary',saved);
-    if(saved){button.textContent='もう一度保存';button.setAttribute('aria-label',`${button.dataset.displayName || fileLabel(button.dataset.url)}をもう一度保存`);}
+    if(saved){button.textContent='もう一度保存';button.setAttribute('aria-label',`${button.dataset.displayName || candidateLabel(url)}をもう一度保存`);}
   }
   const completed=[...(state.history || []),...state.jobs,...mediaSaver.results.values()].filter(job=>job.status==='complete' && Number.isSafeInteger(job.downloadId));
   const records=[...new Map(completed.map(job=>[job.downloadId,job])).values()].slice(-50).reverse();
@@ -176,7 +179,7 @@ function renderImages() {
     const image=new Image(); image.loading='lazy'; image.alt=''; image.referrerPolicy='no-referrer';
     image.addEventListener('error',()=>{ thumb.replaceChildren(element('span','meta','プレビューを表示できません')); }); image.src=item.url; thumb.append(image);
     const body=element('div','card-body');
-    const input=element('input','image-select'); input.type='checkbox';input.dataset.url=item.url; input.checked=selected.has(item.url);
+    const input=element('input','image-select'); input.type='checkbox';input.dataset.candidateId=resources.id(item.url); input.checked=selected.has(item.url);
     input.setAttribute('aria-label',`${fileLabel(item.url)}を選択`);
     input.addEventListener('change',()=>{input.checked ? selected.add(item.url) : selected.delete(item.url);updateSummary();});
     const name=element('strong','file-name',fileLabel(item.url)); name.title=fileLabel(item.url);
@@ -202,6 +205,7 @@ function showView(view, focus=true) {
 }
 function renderVideos() {
   const retained=new Set([...state.items,...(state.previousItems || []),...(state.jobs || []),...(state.history || [])].map(item=>item.url));
+  resources.retain([...retained,...mediaSaver.results.keys()]);
   for(const url of formatSelections.keys())if(!retained.has(url))formatSelections.delete(url);
   renderVideoGroups({state,element,icon,statusElement,formatOptions:outputOptions,
     formatValue:(item,options)=>{
@@ -214,7 +218,7 @@ function renderVideos() {
     onFormatChange:(item,select)=>{
       if(isBusy() || recorder?.busy){select.value=formatSelections.get(item.url);return;}
       formatSelections.set(item.url,select.value);
-      for(const other of document.querySelectorAll('.output-format'))if(other.dataset.url===item.url)other.value=select.value;
+      for(const other of document.querySelectorAll('.output-format'))if(elementURL(other)===item.url)other.value=select.value;
     },
     onSave:item=>{
       if(isBusy() || recorder?.busy)return;
@@ -260,7 +264,7 @@ async function scan() {
   }
 }
 function render() {
-  $('notices').textContent=state.notices.join(' ');$('notices').hidden=!state.notices.length;
+  $('notices').textContent=displayText(state.notices.join(' '));$('notices').hidden=!state.notices.length;
   KIND === 'images' ? renderImages() : renderVideos();
   if(KIND==='videos')updateVideoChoices();
 }
@@ -362,7 +366,7 @@ function updateRecording(s) {
   const showCaptureDetails=Boolean(s.method) && !['starting','awaiting-audio-decision'].includes(s.phase);
   $('record-metrics').hidden=!showCaptureDetails;
   $('record-description').hidden=!showCaptureDetails;
-  $('record-description').textContent=s.method ? `${s.method==='video' ? '選んだ動画のみ' : s.method==='tab' ? '元のタブ全体' : 'Chromeで選んだ共有対象'} · ${s.target || state.title} · WebM · ${s.audio ? '音声あり' : '音声なし'}${busy ? ' · この作業タブを閉じないでください' : ''}` : '';
+  $('record-description').textContent=s.method ? `${s.method==='video' ? '選んだ動画のみ' : s.method==='tab' ? '元のタブ全体' : 'Chromeで選んだ共有対象'} · ${displayText(s.target || state.title)} · WebM · ${s.audio ? '音声あり' : '音声なし'}${busy ? ' · この作業タブを閉じないでください' : ''}` : '';
   if($('record-message').textContent!==s.message) $('record-message').textContent=s.message || '';
   $('record-message').hidden=!s.message || s.message===initialRecorderMessage;
   if(recorder && $('preview').srcObject!==recorder.stream) $('preview').srcObject=recorder.stream || null;
@@ -373,7 +377,7 @@ function updateRecording(s) {
   const stage=videoStage || {idle:['screen','録画の準備',targetHint],starting:['refresh','共有する対象を確認','Chromeの案内に従ってください。'],finalizing:['refresh','保存を確定中','この作業タブを閉じないでください。'],saving:['refresh','ファイルを保存中','保存先を確認してください。'],ready:['download','録画できました','ファイルへ保存して完了です。'],saved:['check','保存しました','直前の録画 · WebM'],error:['info','録画・保存を確認','下のメッセージを確認してください。']}[s.phase];
   if(stage) {
     $('stage-icon').querySelector('use').setAttribute('href',`icons.svg#${stage[0]}`);
-    $('stage-title').textContent=stage[1];$('stage-hint').textContent=stage[2];
+    $('stage-title').textContent=displayText(stage[1]);$('stage-hint').textContent=displayText(stage[2]);
   }
   recordingResultView?.update(s);
   if(layoutMoved && focused?.isConnected && !focused.closest('[hidden]') && !focused.disabled)focused.focus({preventScroll:true});
@@ -394,7 +398,7 @@ if(KIND === 'images') {
   $('save').addEventListener('click',()=>saveURLs([...selected]));
 }
 try {
-  state=await send('hello');$('source-title').textContent=state.title;
+  state=await send('hello');$('source-title').textContent=displayText(state.title);
   try{$('source-domain').textContent=new URL(state.url).hostname;}catch{}
   if(KIND==='videos')setupRecording();
   render();

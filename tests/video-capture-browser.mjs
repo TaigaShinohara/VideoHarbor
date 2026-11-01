@@ -9,6 +9,7 @@ import {fileURLToPath} from 'node:url';
 import {createServer} from 'node:http';
 import {spawnSync} from 'node:child_process';
 import {launchTestExtension} from './chrome-runtime.mjs';
+import {candidateLocator,candidateCount,assertPrivateDOM} from './privacy-browser-helpers.mjs';
 const {chromium}=await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const repo=fileURLToPath(new URL('../',import.meta.url));
 const scratch=await mkdtemp(join(tmpdir(),'videoharbor-video-only-qa-'));
@@ -162,8 +163,9 @@ try {
   const cdp=await context.newCDPSession(manager);await cdp.send('Browser.setDownloadBehavior',{behavior:'allow',downloadPath:downloadFolder,eventsEnabled:true});
   console.log('video-only QA: workspace and discovery ready');
   assert.equal(await manager.locator('.record-video-button').count(),8,'the shared top-page and same-origin frame URL has one video group');
+  await assertPrivateDOM(manager,['/target.webm']);
   assert.equal(await manager.locator('#record-video option').evaluateAll(options=>options.filter(option=>option.value).length),9,'every real VIDEO remains selectable, including URL-less streams and both frames');
-  assert.equal(await manager.locator(`.direct-save[data-url="${origin}/target.webm"]`).count(),1,'the shared top-page and same-origin frame URL has one save card');
+  assert.equal(await candidateCount(manager,origin+'/target.webm','.direct-save'),1,'the shared top-page and same-origin frame URL has one save card');
 
   console.log('video-only QA: record target with background/pause/seek');
   await select(manager,'赤い対象動画');await screenshot(manager,'prepare');await start(manager);
