@@ -401,9 +401,9 @@ test('BG-format: typed extensionless MP4 may use MP4, while unknown endpoints ca
   assert.equal(h.requested.length,1);
 });
 
-test('BG-format: completed Chrome WebM/QuickTime responses cannot report successful selected MP4 output',async t=>{
+test('BG-format: completed incompatible media responses cannot report successful selected MP4 output',async t=>{
   const h=await browser(t);
-  for(const mime of ['video/webm','video/quicktime']) {
+  for(const mime of ['video/webm','video/quicktime','application/ogg',' Application/Ogg ; codecs=theora','video/ogg','video/unknown']) {
     h.state.jobs=[{url:'https://source.test/declared.mp4',filename:'declared.mp4',downloadId:7,status:'in_progress',outputFormat:'mp4'}];h.persist();
     h.downloads.set(7,{id:7,state:'complete',mime,bytesReceived:10,totalBytes:10});
     const response=await h.send({type:'get'});assert.equal(response.ok,true,response.error);
@@ -415,7 +415,7 @@ test('BG-format: completed Chrome WebM/QuickTime responses cannot report success
 
 test('BG-format: actual native MP4/M4V complete normally and auto accepts other actual video formats',async t=>{
   const h=await browser(t);
-  for(const [mime,outputFormat] of [['video/mp4','mp4'],['video/mp4; codecs=avc1','mp4'],['video/x-m4v','mp4'],['video/webm','auto'],['video/quicktime','auto']]) {
+  for(const [mime,outputFormat] of [['video/mp4','mp4'],['video/mp4; codecs=avc1','mp4'],['video/x-m4v','mp4'],[' Video/MP4 ; codecs=avc1','mp4'],['application/octet-stream','mp4'],['','mp4'],['video/webm','auto'],['video/quicktime','auto'],['application/ogg','auto']]) {
     h.state.jobs=[{url:'https://source.test/clip',filename:outputFormat==='mp4' ? 'clip.mp4' : 'clip.video',downloadId:7,status:'in_progress',outputFormat}];h.persist();
     h.downloads.set(7,{id:7,state:'complete',mime,bytesReceived:10,totalBytes:10});
     const response=await h.send({type:'get'});assert.equal(response.ok,true,response.error);

@@ -68,6 +68,24 @@ test('TS->MP4: ambiguous AVC access units, non-IDR starts and invalid timestamps
   const t=transport();t.add(0,pat(),true);t.add(4096,pmt({audio:false}),true);const packet=pes(annex(sps(),pps(),slice()));packet[9]&=254;t.add(256,packet);assert.throws(()=>remuxTSToMP4(t.result()),/タイムスタンプ/);
 });
 
+test('TS->MP4: valid AVC escapes crossing the slice-header prefix keep the complete NAL bytes',async()=>{
+  for(const offset of [60,61,62])for(const following of [0,1,2,3]) {
+    const nal=new Uint8Array(70).fill(0x55);nal.set(slice());nal.set([0,0,3,following],offset);
+    const bytes=new Uint8Array(await remuxTSToMP4(fixture({audio:false,count:1,videoES:annex(sps(),pps(),nal)})).arrayBuffer());
+    const mdat=path(bytes,'mdat');
+    assert.equal(data(bytes).getUint32(mdat.data),nal.length);
+    assert.deepEqual(bytes.subarray(mdat.data+4,mdat.end),nal,`escape at ${offset} with lookahead ${following} preserves compressed bytes`);
+  }
+});
+
+test('TS->MP4: an invalid or actually truncated AVC escape at the prefix boundary remains rejected',()=>{
+  for(const following of [4,255,undefined]) {
+    const nal=new Uint8Array(following===undefined ? 64 : 70).fill(0x55);nal.set(slice());
+    nal.set(following===undefined ? [0,0,3] : [0,0,3,following],61);
+    assert.throws(()=>remuxTSToMP4(fixture({audio:false,count:1,videoES:annex(sps(),pps(),nal)})),/AVCのエスケープが不正/);
+  }
+});
+
 test('TS->MP4: 33-bit timestamp rollover stays continuous',async()=>{
   const bytes=new Uint8Array(await remuxTSToMP4(fixture({clock:8589934592-6000,audio:false})).arrayBuffer());
   const stts=path(bytes,'moov','trak','mdia','minf','stbl','stts');assert.equal(data(bytes).getUint32(stts.data+4),1);assert.equal(data(bytes).getUint32(stts.data+8),3);assert.equal(data(bytes).getUint32(stts.data+12),3000);

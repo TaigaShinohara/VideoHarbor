@@ -1,5 +1,15 @@
 # QA — v0.1
 
+## 未解決PR指摘と情報点検 — 2026-11-01
+
+- 全19件の既存PRを確認。すべてマージ済みだったが、#5の未解決指摘2件が現行コードにも残っていたため修正した。実応答の `application/ogg` とMP4選択の不一致、AVC escapeの検査prefix境界を対象とする。
+- 修正前の回帰2件は失敗し、修正後の対象37テストはPASS。正常escapeの境界前後12パターンと圧縮NALの完全保持、不正/実切断escape、MIMEの大小文字・空白と互換/非互換/不明応答を確認。
+- `npm test`: 302件PASS、失敗・SKIPなし。`npm run check` / `git diff --check`: PASS。
+- `npm run test:embedded`: 隔離Chromeとローカル合成fixtureでPASS。直接保存、TS保持/MP4変換、fMP4、DASH、別音声HLS、blobの実download、音声/映像の長さと全編decode、WebMをMP4としない実応答拒否等を確認。配布manifest・個人Chromeプロファイル・実サイトは使用/変更しない。
+- `npm run test:security`: 隔離Chrome・合成HTTP/HTTPSでPASS。Cookie/Basic認証/Referer、fetchのredirect拒否、Chrome直接downloadのredirectと別originへの認証転送を検証。秘密値をログに出さず有無を照合した。
+- 同梱27ファイル、追跡70ファイル、Git全object内の285 blobと51 commit message、ローカル除外178ファイルを点検。実秘密の混入は未発見。内部文書リンク・Git作者情報、利用者データの保持・画面表示は別途記録した。範囲・方法・発見と未確認は [INFORMATION-AUDIT-2026-11-01.md](INFORMATION-AUDIT-2026-11-01.md)。
+- 実OS picker・実音声・人間の操作体験・長時間録画・実サイト互換性の追加確認は今回未実施。
+
 ## 同じ保存元の動画カード重複を解消 — 2026-10-31
 
 - `npm test`: 300件PASS、失敗・SKIPなし。動画グループの回帰を8件追加し、完全URLの共有・複数frame/config・重なる代替保存元・同名/query違い・入力非破壊・代表出典の整合・現行録画対象の保持を確認。最初の期待変更で既存実装の重複を再現した。

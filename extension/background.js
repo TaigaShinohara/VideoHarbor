@@ -2,7 +2,7 @@ import { collect, locateSourceElement, inspectSourceDocument } from './collector
 import { discoverySnapshot, migrateDiscovery, DISCOVERY_VERSION } from './discovery.js';
 import { readPageBlob } from './page-blob.js';
 import { controlPageVideo } from './page-video-recording.js';
-import { validateOutputFormat } from './output-format.js';
+import { originalExtension, validateOutputFormat } from './output-format.js';
 import { allowedURL, downloadName, summarizeJobs, publicError } from './utils.js';
 const KIND = 'videos';
 const PREFIX = 'workspace:';
@@ -108,8 +108,12 @@ async function refreshJob(job) {
   if (item.state === 'complete' && /^(text\/html|application\/(json|xml))/i.test(item.mime || '')) {
     job.status='interrupted'; job.error='メディアではない応答が保存されました。サイトの認証・制限を確認してください。';
   }
-  if(item.state==='complete' && job.outputFormat==='mp4' && /^video\//i.test(item.mime || '') && !/^video\/(?:mp4|x-m4v)(?:;|$)/i.test(item.mime)) {
-    job.status='interrupted';job.error='選択したMP4と異なる形式の応答が保存されました。保存先のファイルと配信元を確認してください。';
+  const mime=typeof item.mime==='string' ? item.mime.split(';',1)[0].trim().toLowerCase() : '';
+  // Apply the selector's known-media policy to actual responses too, including
+  // application/ogg. A missing or generic MIME remains unconfirmed as before.
+  if(item.state==='complete' && job.outputFormat==='mp4' && (mime.startsWith('video/') || originalExtension({mime}))) {
+    try {validateOutputFormat({type:'direct',mime},'mp4');}
+    catch {job.status='interrupted';job.error='選択したMP4と異なる形式の応答が保存されました。保存先のファイルと配信元を確認してください。';}
   }
 }
 async function ownedDownload(state, id) {
