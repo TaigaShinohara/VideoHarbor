@@ -608,3 +608,20 @@ test('locate-video accepts only a current real element and works without a recor
   assert.equal(h.tabs.get(1).active,true);
   assert.equal((await h.send({type:'locate-video',reference:{...videoRef,elementToken:'metadata-only'}})).ok,false);
 });
+
+
+test('video inspection requires the exact workspace lock and reference without reserving a recording token',async t=>{
+  const h=await browser(t);h.state.videoElements=[videoRef];h.persist();
+  assert.equal((await h.send({type:'video-control',command:'inspect',token:videoToken,reference:videoRef})).ok,false);
+  await h.send({type:'capture',mode:'video'});
+  h.setScriptResults([{frameId:2,documentId:'source-document',result:{currentTime:3,ended:false,duration:12}}]);
+  const response=await h.send({type:'video-control',command:'inspect',token:videoToken,reference:videoRef});
+  assert.equal(response.ok,true);assert.equal(response.data.currentTime,3);assert.equal(h.store.get('captureLock').videoToken,undefined);
+  assert.equal(h.scripts.at(-1).args[0].command,'inspect');
+  const before=h.scripts.length;
+  assert.equal((await h.send({type:'video-control',command:'inspect',token:videoToken,reference:{...videoRef,documentId:'wrong'}})).ok,false);
+  assert.equal(h.scripts.length,before);
+  h.setScriptResults([{frameId:2,documentId:'source-document',result:{available:true,audio:true,state:'inactive'}}]);
+  assert.equal((await h.send({type:'video-control',command:'prepare',token:videoToken,reference:videoRef,restart:true,mimeType:'video/webm'})).ok,true);
+  assert.equal(h.scripts.at(-1).args[0].restart,true);assert.equal(h.store.get('captureLock').videoToken,videoToken);
+});

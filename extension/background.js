@@ -214,7 +214,7 @@ function videoReference(state, reference) {
 }
 async function videoControl(state, message) {
   if (!/^[a-f0-9-]{36}$/.test(message.token || '')
-    || !['prepare','poll','start','pause','resume','stop','close'].includes(message.command)) throw new Error('動画録画の指定が不正です。');
+    || !['inspect','prepare','poll','start','pause','resume','stop','close'].includes(message.command)) throw new Error('動画録画の指定が不正です。');
   const ref = videoReference(state, message.reference);
   const lock = (await chrome.storage.session.get('captureLock')).captureLock;
   if (lock?.sessionId !== state.id || lock.tabId !== state.workspaceTabId || lock.instance !== message.instance || lock.mode !== 'video') {
@@ -224,14 +224,14 @@ async function videoControl(state, message) {
     if (lock.videoToken && lock.videoToken !== message.token) throw new Error('動画の録画はすでに準備されています。');
     lock.videoToken = message.token; lock.videoElementToken = ref.elementToken; lock.videoFrameToken = ref.frameToken;
     await chrome.storage.session.set({captureLock:lock});
-  } else if (lock.videoToken !== message.token || lock.videoElementToken !== ref.elementToken || lock.videoFrameToken !== ref.frameToken) {
+  } else if (message.command !== 'inspect' && (lock.videoToken !== message.token || lock.videoElementToken !== ref.elementToken || lock.videoFrameToken !== ref.frameToken)) {
     throw new Error('動画録画の接続が変わりました。元ページからやり直してください。');
   }
   const tab = await liveTab(state.tabId);
   if (!tab || tab.url !== state.url) throw new Error('元ページが閉じられたか移動しました。取得済みの動画を確認してください。');
   const target = {tabId:state.tabId,...(ref.documentId ? {documentIds:[ref.documentId]} : {frameIds:[ref.frameId || 0]})};
   const request = {command:message.command,token:message.token,reference:ref,
-    audio:Boolean(message.audio),mimeType:message.mimeType,ack:message.ack};
+    audio:Boolean(message.audio),restart:Boolean(message.restart),mimeType:message.mimeType,ack:message.ack};
   let timer;
   try {
     const results = await Promise.race([

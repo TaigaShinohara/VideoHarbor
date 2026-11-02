@@ -38,6 +38,8 @@ test('collector discovers real recording targets independently of media URLs and
   assert.equal(first.srcObject,undefined);assert.equal(first.currentSrc,undefined,'media source identity stays in the source frame');
   assert.equal(doc.__videoHarborDiscovery.elements.get(first.elementToken),video);
   assert.equal(doc.__videoHarborDiscovery.videoSources.get(first.elementToken).srcObject,stream);
+  assert.deepEqual(doc.__videoHarborDiscovery.videoSources.get(first.elementToken).attributes,[null]);
+  assert.equal(first.attributes,undefined,'private source attributes are not serialized into the workspace');
   assert.equal(output.videoElements[1].paused,true);
   const repeated=scan(t,doc);
   assert.equal(repeated.videoElements[0].elementToken,first.elementToken,'rescanning the same element retains its token');
@@ -412,4 +414,14 @@ test('metadata embed hints never claim a script is a locatable visual player',t=
   assert.ok(element.elementToken);
   assert.equal(element.title,'Actual visible player');
   assert.equal(element.position.y,20);
+});
+
+
+test('unresolved video source attributes remain private and can be checked before automatic playback',t=>{
+  const video=node('video',{src:'/pending.webm?synthetic=one'},{currentSrc:'',readyState:0,paused:true},[
+    node('source',{src:'/alternative.webm'}),
+  ]);
+  const doc=documentFor([video]),output=scan(t,doc),reference=output.videoElements[0];
+  assert.deepEqual(doc.__videoHarborDiscovery.videoSources.get(reference.elementToken).attributes,['/pending.webm?synthetic=one','/alternative.webm']);
+  assert.equal(reference.attributes,undefined);assert.equal(reference.currentSrc,undefined);
 });

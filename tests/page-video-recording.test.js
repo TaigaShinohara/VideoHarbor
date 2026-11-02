@@ -34,7 +34,7 @@ class Recorder extends EventTarget {
 function harness(t,{audio=true}={}) {
   const descriptors=new Map(['document','MediaRecorder','MediaStream','addEventListener','removeEventListener'].map(name=>[name,Object.getOwnPropertyDescriptor(globalThis,name)]));
   const stream=new Stream(audio),video=new EventTarget();
-  Object.assign(video,{tagName:'VIDEO',isConnected:true,readyState:4,videoWidth:320,videoHeight:180,paused:false,ended:false,muted:false,volume:1,currentSrc:'https://source.test/movie.webm',srcObject:null,mediaKeys:null,getAttribute:()=>null,captureStream:()=>stream});
+  Object.assign(video,{tagName:'VIDEO',isConnected:true,readyState:4,videoWidth:320,videoHeight:180,paused:false,ended:false,currentTime:0,duration:12,playCalls:0,pauseCalls:0,play:async()=>{video.playCalls++;video.paused=false;video.dispatchEvent(new Event('play'));},pause:()=>{video.pauseCalls++;video.paused=true;},muted:false,volume:1,currentSrc:'https://source.test/movie.webm',srcObject:null,mediaKeys:null,getAttribute:()=>null,captureStream:()=>!video.srcObject&&stream.getTracks().every(track=>track.readyState==='ended')?new Stream(audio):stream});
   const discovery={token:reference.frameToken,elements:new Map([[reference.elementToken,video]]),videoSources:new Map([[reference.elementToken,{currentSrc:video.currentSrc,srcObject:null}]])};
   const page=new EventTarget();
   const replacements={document:{URL:reference.documentURL,__videoHarborDiscovery:discovery},MediaRecorder:Recorder,MediaStream:Stream,addEventListener:page.addEventListener.bind(page),removeEventListener:page.removeEventListener.bind(page)};
@@ -55,8 +55,7 @@ test('element recording validates the document, scan source and playback without
   assert.match((await h.command('prepare',{reference:{...reference,frameToken:'changed'}})).error,/見つかりません/);
   h.video.currentSrc+='?changed';assert.match((await h.command('prepare')).error,/再生元が変わりました/);
   h.video.currentSrc=h.discovery.videoSources.get(reference.elementToken).currentSrc;
-  h.video.paused=true;assert.match((await h.command('prepare')).error,/再生してから/);
-  h.video.paused=false;h.video.mediaKeys={};assert.match((await h.command('prepare')).error,/保護された/);
+  h.video.mediaKeys={};assert.match((await h.command('prepare')).error,/保護された/);
   assert.equal(Recorder.instances.length,0);assert.equal(h.video.paused,false);assert.equal(h.video.muted,false);
 });
 
@@ -230,4 +229,147 @@ test('natural video end takes priority over simultaneous captured-track mute and
   const h=harness(t);await h.command('prepare');await h.command('start');
   h.video.ended=true;h.stream.getVideoTracks()[0].muted=true;h.stream.getVideoTracks()[0].dispatchEvent(new Event('mute'));
   const response=await h.command('poll');assert.equal(response.failure,'');assert.match(response.reason,/再生が終了/);
+});
+
+
+test('inspection reads the live position without capture, playback, or session allocation', async t=>{
+  const h=harness(t);h.video.paused=true;h.video.currentTime=3.25;
+  const state=await h.command('inspect');
+  assert.deepEqual(state,{currentTime:3.25,duration:12,paused:true,ended:false});
+  assert.equal(h.session,undefined);assert.equal(Recorder.instances.length,0);assert.equal(h.video.playCalls,0);
+  assert.ok(h.stream.getTracks().every(track=>track.readyState==='live'));
+  assert.match((await h.command('inspect',{reference:{...reference,frameToken:'wrong'}})).error,/見つかりません/);
+});
+
+test('paused video remains paused during preparation and the recorder arms inside its native play event', async t=>{
+  const h=harness(t);h.video.paused=true;h.video.currentTime=3;
+  h.video.play=async()=>{assert.equal(h.recorder.state,'inactive');h.video.playCalls++;h.video.paused=false;h.video.dispatchEvent(new Event('play'));};
+  await h.command('prepare');assert.equal(h.video.playCalls,0);assert.equal(h.video.paused,true);
+  assert.equal((await h.command('start')).state,'recording');
+  assert.equal(Recorder.instances.length,2,'a fresh stream wins over old native capture listeners');
+  assert.equal(h.video.playCalls,1);assert.equal(h.video.currentTime,3,'automatic playback preserves the confirmed position');
+});
+
+test('rejected automatic playback stops capture and leaves source settings intact', async t=>{
+  const h=harness(t);h.video.paused=true;h.video.play=()=>Promise.reject(new DOMException('synthetic private URL','NotAllowedError'));
+  await h.command('prepare');const result=await h.command('start');
+  assert.match(result.error,/自動再生できません/);assert.doesNotMatch(result.error,/synthetic/);
+  assert.equal(h.video.paused,true);assert.equal(h.video.muted,false);assert.equal(h.video.volume,1);
+  await new Promise(resolve=>queueMicrotask(resolve));
+  assert.ok(h.stream.getTracks().every(track=>track.readyState==='ended'));
+});
+
+test('ended sources require explicit restart consent before rewinding', async t=>{
+  const h=harness(t);h.video.ended=true;h.video.paused=true;h.video.currentTime=12;
+  assert.equal((await h.command('inspect')).ended,true);
+  assert.match((await h.command('prepare')).error,/再生が終了/);assert.equal(h.video.currentTime,12);
+  Object.defineProperty(h.video,'currentTime',{configurable:true,get(){return this.position;},set(value){this.position=value;this.ended=false;}});
+  const prepared=await h.command('prepare',{restart:true});assert.equal(prepared.available,true);assert.equal(h.video.currentTime,0);
+  await h.command('start');assert.equal(h.video.paused,false);
+});
+
+test('unloaded source uses a temporary preload hint while preserving paused time and source identity', async t=>{
+  const h=harness(t);h.video.readyState=0;h.video.paused=true;h.video.currentSrc='';
+  h.discovery.videoSources.get(reference.elementToken).currentSrc='';
+  h.discovery.videoSources.get(reference.elementToken).attributes=['/movie.webm'];
+  const attrs=new Map([['src','/movie.webm'],['preload','none']]);
+  h.video.getAttribute=name=>attrs.get(name)??null;h.video.setAttribute=(name,value)=>attrs.set(name,value);h.video.removeAttribute=name=>attrs.delete(name);
+  Object.defineProperty(h.video,'preload',{get:()=>attrs.get('preload')||'',set:value=>{
+    attrs.set('preload',value);
+    queueMicrotask(()=>{h.video.currentSrc='https://source.test/movie.webm';h.video.readyState=4;});
+  }});
+  const prepared=await h.command('prepare');assert.equal(prepared.available,true);
+  assert.equal(h.video.preload,'none');assert.equal(h.video.paused,true);assert.equal(h.video.currentTime,0);assert.equal(h.video.playCalls,0);
+  await h.command('start');assert.equal(h.video.playCalls,1);
+});
+
+test('preload preparation rejects changed source attributes and restores its hint on failure', async t=>{
+  const h=harness(t);h.video.readyState=0;h.video.paused=true;
+  const attrs=new Map([['src','/movie.webm'],['preload','none']]);
+  h.video.getAttribute=name=>attrs.get(name)??null;h.video.setAttribute=(name,value)=>attrs.set(name,value);h.video.removeAttribute=name=>attrs.delete(name);
+  Object.defineProperty(h.video,'preload',{get:()=>attrs.get('preload')||'',set:value=>{attrs.set('preload',value);attrs.set('src','/changed.webm');}});
+  assert.match((await h.command('prepare')).error,/読み込みを準備できません/);
+  assert.equal(h.video.preload,'none');assert.equal(h.session,undefined);assert.equal(h.video.playCalls,0);
+});
+
+
+test('timed-out playback stops our capture and cannot restart playback when its promise resolves late',async t=>{
+  t.mock.timers.enable({apis:['setTimeout']});
+  const h=harness(t);h.video.paused=true;let resolvePlay;
+  h.video.play=()=>new Promise(resolve=>{resolvePlay=()=>{h.video.paused=false;resolve();};});
+  await h.command('prepare');const start=h.command('start');
+  t.mock.timers.tick(3001);assert.match((await start).error,/自動再生できません/);
+  assert.equal(h.video.paused,true);resolvePlay();await new Promise(resolve=>queueMicrotask(resolve));
+  assert.equal(h.video.paused,true);assert.equal(h.recorder.state,'inactive');
+});
+
+test('failed playback cleanup never pauses a replacement source on the same video element',async t=>{
+  const h=harness(t);h.video.paused=true;
+  h.video.play=()=>{h.video.currentSrc+='?new';h.video.paused=false;return Promise.reject(new Error('replaced'));};
+  await h.command('prepare');assert.match((await h.command('start')).error,/自動再生できません/);
+  assert.equal(h.video.paused,false);assert.equal(h.video.pauseCalls,0);
+});
+
+test('a preloaded source cannot replace an unresolved scanned source before inspection',async t=>{
+  const h=harness(t),source=h.discovery.videoSources.get(reference.elementToken);
+  source.currentSrc='';source.attributes=['/scanned.webm'];h.video.getAttribute=name=>name==='src'?'/replacement.webm':null;
+  assert.match((await h.command('inspect')).error,/再生元が変わりました/);assert.equal(h.video.playCalls,0);
+});
+
+
+test('legacy unresolved scan metadata requires rescan rather than following an unknown source',async t=>{
+  const h=harness(t),source=h.discovery.videoSources.get(reference.elementToken);source.currentSrc='';
+  assert.match((await h.command('inspect')).error,/確認情報が古い/);assert.equal(h.session,undefined);
+});
+
+
+test('a site play handler cannot silently move the confirmed position before recording starts',async t=>{
+  const h=harness(t);h.video.paused=true;h.video.currentTime=0;
+  h.video.addEventListener('play',()=>{h.video.currentTime=3;});
+  await h.command('prepare');assert.match((await h.command('start')).error,/再生位置が変わりました/);
+  assert.equal(h.video.paused,true);assert.equal(h.session,undefined);assert.equal(h.recorder.state,'inactive');
+});
+
+
+test('fresh play-event capture refuses changed audio rather than silently recording without it',async t=>{
+  const h=harness(t);h.video.paused=true;let captures=0;
+  h.video.captureStream=()=>new Stream(captures++===0);
+  assert.equal((await h.command('prepare')).audio,true);
+  assert.match((await h.command('start')).error,/映像・音声構成が変わりました/);
+  assert.equal(h.video.paused,true);assert.equal(h.session,undefined);
+});
+
+test('fresh play-event capture preserves an explicit no-audio choice if source is unmuted meanwhile',async t=>{
+  const h=harness(t);h.video.paused=true;h.video.muted=true;
+  assert.equal((await h.command('prepare')).audio,false);h.video.muted=false;
+  assert.equal((await h.command('start')).audio,false);assert.equal(h.recorder.stream.getAudioTracks().length,0);
+});
+
+
+test('play-event preparation cannot silently advance while waiting for source readiness',async t=>{
+  const h=harness(t);h.video.paused=true;h.video.currentTime=0;h.video.preload='auto';
+  h.video.addEventListener('play',()=>{
+    h.video.readyState=0;
+    queueMicrotask(()=>{h.video.currentTime=0.5;h.video.readyState=4;});
+  });
+  await h.command('prepare');assert.match((await h.command('start')).error,/再生位置が変わりました/);
+  assert.equal(h.video.paused,true);assert.equal(h.session,undefined);assert.equal(h.recorder.state,'inactive');
+});
+
+test('synchronously rejected source playback returns only the fixed public error',async t=>{
+  const h=harness(t);h.video.paused=true;
+  h.video.play=()=>{throw new Error('動画の https://private.test/?synthetic=secret');};
+  await h.command('prepare');const response=await h.command('start');
+  assert.match(response.error,/自動再生できません/);assert.doesNotMatch(response.error,/private|secret|https/);
+  assert.equal(h.session,undefined);assert.equal(h.video.paused,true);
+});
+
+test('paused srcObject playback rebuilds recording clones without stopping borrowed input tracks',async t=>{
+  const h=harness(t),original=[...h.stream.getTracks()];h.video.srcObject=h.stream;h.video.paused=true;
+  h.discovery.videoSources.get(reference.elementToken).srcObject=h.stream;
+  await h.command('prepare');const initialClones=[...h.recorder.stream.getTracks()];
+  assert.equal((await h.command('start')).state,'recording');
+  assert.ok(original.every(track=>track.readyState==='live'));assert.ok(initialClones.every(track=>track.readyState==='ended'));
+  await h.command('stop');await new Promise(resolve=>queueMicrotask(resolve));
+  assert.ok(original.every(track=>track.readyState==='live'));assert.ok(h.recorder.stream.getTracks().every(track=>track.readyState==='ended'));
 });

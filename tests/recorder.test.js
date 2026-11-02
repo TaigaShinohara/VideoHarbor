@@ -95,6 +95,8 @@ function harness(t, options = {}) {
     acquire: async (mode) => { calls.push(`acquire:${mode}`); return options.acquire ? options.acquire(mode) : { streamId: 'one-use' }; },
     release: async () => { calls.push('release'); releases++; },
     prepareVideo: options.prepareVideo,
+    inspectVideo: options.inspectVideo,
+    activateVideo: options.activateVideo,
   });
   t.after(async () => {
     if (controller.busy) await controller.stop();
@@ -850,4 +852,81 @@ test('video file output waits for the final remote data and closes only after or
   unblock();await stopping;
   assert.deepEqual(writes,['first','final']);assert.equal(closed,true);assert.equal(h.controller.snapshot().phase,'saved');
   assert.equal(h.controller.snapshot().resultSaved,true);assert.equal(remote.closed,1);assert.equal(h.releases(),1);
+});
+
+test('video at the beginning starts without a position prompt and inspects before preparing', async t=>{
+  const order=[],remote=new RemoteRecorder();
+  const h=harness(t,{inspectVideo:async({reference})=>{assert.equal(reference,videoReference);order.push('inspect');return {currentTime:0,ended:false};},prepareVideo:async()=>{order.push('prepare');return remote;}});
+  assert.equal(await h.controller.start('video',true,'memory',videoReference),true);
+  assert.deepEqual(order,['inspect','prepare','inspect']);assert.equal(h.controller.continueFromPosition(),false);
+  await h.controller.stop();
+});
+
+test('mid-position warning happens before capture or file writes and cancellation preserves prior result and destination',async t=>{
+  let prepared=0,written=0;
+  const h=harness(t,{inspectVideo:async()=>({currentTime:83.4,ended:false}),prepareVideo:async()=>{prepared++;return new RemoteRecorder();},picker:async()=>({name:'unused.webm',createWritable(){written++;throw new Error('must not write');}})});
+  await h.controller.start('display',false,'memory');await h.controller.stop();await h.controller.save();
+  const previous=await h.controller.getResultFile();await h.controller.chooseFile();
+  const starting=h.controller.start('video',true,'file',videoReference);await tick();
+  const snapshot=h.controller.snapshot();
+  assert.equal(snapshot.phase,'awaiting-position-decision');assert.equal(snapshot.sourcePosition,83.4);assert.equal(snapshot.sourceEnded,false);
+  assert.equal(h.controller.busy,true);assert.equal(prepared,0);assert.equal(written,0);
+  assert.match(snapshot.message,/先頭ではありません/);
+  await h.controller.cancelStart();assert.equal(await starting,false);
+  assert.equal(h.controller.snapshot().phase,'saved');assert.equal(h.controller.snapshot().diskChosen,true);
+  assert.equal(await h.controller.getResultFile(),previous);assert.equal(prepared,0);assert.equal(written,0);
+  assert.equal(h.calls.at(-1),'release');
+});
+
+test('confirmed mid-position proceeds to the independent audio decision before recording',async t=>{
+  const remote=new RemoteRecorder(false);let prepared=0;
+  const h=harness(t,{inspectVideo:async()=>({currentTime:3,ended:false}),prepareVideo:async()=>{prepared++;return remote;}});
+  const starting=h.controller.start('video',true,'memory',videoReference);await tick();
+  assert.equal(h.controller.snapshot().phase,'awaiting-position-decision');assert.equal(prepared,0);
+  assert.equal(h.controller.continueFromPosition(),true);await tick();
+  assert.equal(prepared,1);assert.equal(h.controller.snapshot().phase,'awaiting-audio-decision');assert.equal(remote.state,'inactive');
+  h.controller.continueWithoutAudio();assert.equal(await starting,true);await h.controller.stop();
+});
+
+test('ended source warns that confirmation restarts from the beginning',async t=>{
+  const h=harness(t,{inspectVideo:async()=>({currentTime:12,ended:true}),prepareVideo:async()=>new RemoteRecorder()});
+  const starting=h.controller.start('video',true,'memory',videoReference);await tick();
+  assert.equal(h.controller.snapshot().sourceEnded,true);assert.match(h.controller.snapshot().message,/先頭から再生/);
+  assert.equal(h.controller.continueFromPosition(),true);assert.equal(await starting,true);await h.controller.stop();
+});
+
+test('failed or cancelled source inspection never prepares video or changes the selected file',async t=>{
+  let inspectResolve,prepared=0;
+  const h=harness(t,{inspectVideo:()=>new Promise(resolve=>{inspectResolve=resolve;}),prepareVideo:async()=>{prepared++;return new RemoteRecorder();}});
+  const starting=h.controller.start('video',true,'memory',videoReference);await tick();
+  await h.controller.cancelStart();assert.equal(await starting,false);
+  inspectResolve({currentTime:6,ended:false});await tick();
+  assert.equal(prepared,0);assert.equal(h.controller.snapshot().phase,'idle');assert.equal(h.releases(),1);
+});
+
+test('a site restoring its position while loading warns before the recorder or file writer starts',async t=>{
+  let inspections=0,writers=0;const remote=new RemoteRecorder();
+  const h=harness(t,{inspectVideo:async()=>({currentTime:inspections++===0 ? 0 : 30,ended:false}),prepareVideo:async()=>remote,picker:async()=>({name:'unused.webm',createWritable(){writers++;throw new Error('must not write');}})});
+  await h.controller.chooseFile();const starting=h.controller.start('video',true,'file',videoReference);await tick();
+  assert.equal(inspections,2);assert.equal(h.controller.snapshot().phase,'awaiting-position-decision');
+  assert.equal(h.controller.snapshot().sourcePosition,30);assert.equal(remote.state,'inactive');assert.equal(writers,0);
+  await h.controller.cancelStart();assert.equal(await starting,false);assert.equal(remote.closed,1);
+  assert.equal(h.controller.snapshot().diskChosen,true);assert.equal(h.releases(),1);
+});
+
+test('video activation dispatches synchronously from Start before asynchronous lock acquisition',async t=>{
+  const order=[];
+  const h=harness(t,{activateVideo:({reference})=>{assert.equal(reference,videoReference);order.push('activation');return Promise.resolve();},acquire:async()=>{order.push('lock');return {};},prepareVideo:async()=>new RemoteRecorder()});
+  const starting=h.controller.start('video',true,'memory',videoReference);
+  assert.deepEqual(order,['activation','lock']);assert.equal(await starting,true);await h.controller.stop();
+});
+
+test('remote playback start failure remains an error after cleanup emits a stop event',async t=>{
+  const remote=new RemoteRecorder();
+  remote.start=async()=>{throw new Error('元動画を自動再生できませんでした。');};
+  remote.stop=async()=>{remote.dispatchEvent(new Event('stop'));};
+  const h=harness(t,{prepareVideo:async()=>remote});
+  assert.equal(await h.controller.start('video',true,'memory',videoReference),false);
+  assert.equal(h.controller.snapshot().phase,'error');assert.match(h.controller.snapshot().message,/自動再生できません/);
+  assert.equal(remote.closed,1);assert.equal(h.releases(),1);
 });

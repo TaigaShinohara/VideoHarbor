@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {prepareVideoCapture} from '../extension/video-capture.js';
+import {prepareVideoCapture,inspectVideoCapture,activateVideoCapture} from '../extension/video-capture.js';
 
 const reference={elementToken:'one',frameToken:'frame',documentURL:'https://synthetic.test/'};
 const base={available:true,audio:true,state:'inactive',target:'動画',mimeType:'video/webm',done:false};
@@ -95,4 +95,52 @@ test('missing final stop event has a bounded drain deadline',async t=>{
   const events=[];capture.addEventListener('error',()=>events.push('error'));capture.addEventListener('stop',()=>events.push('stop'));
   await capture.start();await capture.stop();t.mock.timers.tick(120001);await tick();
   assert.ok(capture.stopped);assert.deepEqual(events,['error','stop']);assert.match(capture.failure,/終了データを確認できません/);
+});
+
+
+test('position inspection is a single read-only request and does not prepare or poll', async()=>{
+  const calls=[];const value={currentTime:3,ended:false,duration:12,paused:true};
+  const result=await inspectVideoCapture({reference,send:async(type,request)=>{calls.push({type,...request});return value;}});
+  assert.deepEqual(result,value);assert.equal(calls.length,1);assert.equal(calls[0].command,'inspect');assert.deepEqual(calls[0].reference,reference);
+  await assert.rejects(()=>inspectVideoCapture({reference,send:async()=>{throw new Error('https://private.test/?token=secret');}}),error=>error.name==='CaptureControlError'&&!/private|secret/.test(error.message));
+});
+
+
+test('real-click activation dispatches a read-only exact-document inspection synchronously',async t=>{
+  const old=Object.getOwnPropertyDescriptor(globalThis,'chrome'),calls=[];
+  Object.defineProperty(globalThis,'chrome',{configurable:true,value:{scripting:{executeScript:request=>{
+    calls.push(request);return Promise.resolve([{frameId:2,documentId:'real-document',result:{currentTime:0,ended:false}}]);
+  }}}});
+  t.after(()=>{if(old)Object.defineProperty(globalThis,'chrome',old);else delete globalThis.chrome;});
+  const ref={...reference,documentId:'real-document',frameId:2};
+  const promise=activateVideoCapture({tabId:10,reference:ref});
+  assert.equal(calls.length,1,'executeScript runs in the click stack before any await');
+  assert.deepEqual(calls[0].target,{tabId:10,documentIds:['real-document']});
+  assert.equal(calls[0].func.name,'controlPageVideo');assert.equal(calls[0].args[0].command,'inspect');
+  assert.equal((await promise).currentTime,0);
+  assert.equal(calls[0].args[0].audio,undefined,'activation cannot start recording or request audio');
+});
+
+test('real-click activation rejects stale documents and sanitizes Chrome errors',async t=>{
+  const old=Object.getOwnPropertyDescriptor(globalThis,'chrome');let mode='stale',calls=0;
+  Object.defineProperty(globalThis,'chrome',{configurable:true,value:{scripting:{executeScript:()=>{
+    calls++;if(mode==='error')throw new Error('Cannot access https://private.test/?token=secret');
+    return Promise.resolve([{frameId:0,documentId:'different',result:{currentTime:0}}]);
+  }}}});
+  t.after(()=>{if(old)Object.defineProperty(globalThis,'chrome',old);else delete globalThis.chrome;});
+  const ref={...reference,documentId:'expected',frameId:0};
+  await assert.rejects(()=>activateVideoCapture({tabId:10,reference:ref}),/元ページ/);
+  mode='error';await assert.rejects(()=>activateVideoCapture({tabId:10,reference:ref}),error=>error.name==='CaptureControlError'&&!/private|secret|https/.test(error.message));
+  await assert.rejects(()=>activateVideoCapture({tabId:-1,reference:ref}),/動画を一覧/);assert.equal(calls,2);
+});
+
+
+test('real-click activation has a bounded wait for a frozen source frame',async t=>{
+  t.mock.timers.enable({apis:['setTimeout']});
+  const old=Object.getOwnPropertyDescriptor(globalThis,'chrome');let calls=0;
+  Object.defineProperty(globalThis,'chrome',{configurable:true,value:{scripting:{executeScript:()=>{calls++;return new Promise(()=>{});}}}});
+  t.after(()=>{if(old)Object.defineProperty(globalThis,'chrome',old);else delete globalThis.chrome;});
+  const pending=activateVideoCapture({tabId:10,reference:{...reference,documentId:'frozen',frameId:0}});
+  assert.equal(calls,1);t.mock.timers.tick(5001);
+  await assert.rejects(()=>pending,error=>error.name==='CaptureControlError'&&/応答しません/.test(error.message));
 });
