@@ -1,3 +1,5 @@
+import {controlPageVideo} from './page-video-recording.js';
+
 const MAX_BLOCK_BYTES = 192 * 1024;
 const CONNECTION_ERROR = '元ページとの接続が終了しました。取得済みデータを保存できますが、再生できるか確認してください。';
 
@@ -146,7 +148,7 @@ class VideoCapture extends EventTarget {
 export async function prepareVideoCapture(options) {
   const capture = new VideoCapture(options);
   try {
-    const response = await capture.request('prepare', {audio: Boolean(options.audio), mimeType: options.mimeType});
+    const response = await capture.request('prepare', {audio: Boolean(options.audio), restart: Boolean(options.restart), mimeType: options.mimeType});
     capture.update(response);
     if (!capture.available) throw new Error(capture.failure || '選んだ動画を取得できませんでした。');
     capture.prepared = true; capture.schedule();
@@ -155,4 +157,39 @@ export async function prepareVideoCapture(options) {
     await capture.close();
     throw Object.assign(new Error(safeMessage(error)), {name: 'CaptureControlError'});
   }
+}
+
+// Read the current player position under the same workspace lock and reference
+// checks as recording, without creating a stream or changing playback.
+export async function inspectVideoCapture({send, reference}) {
+  const capture = new VideoCapture({send, reference});
+  try { return await capture.request('inspect'); }
+  catch (error) { throw Object.assign(new Error(safeMessage(error)), {name: 'CaptureControlError'}); }
+}
+
+// Dispatch synchronously from the real Start click: Chrome carries that user
+// gesture into the exact source frame. Inspection never plays or captures media;
+// the locked background checks and confirmation steps still follow separately.
+export function activateVideoCapture({tabId, reference}) {
+  const failed = error => Object.assign(new Error(safeMessage(error, '元ページで選んだ動画を確認できませんでした。元ページから開き直してください。')), {name: 'CaptureControlError'});
+  if (!Number.isInteger(tabId) || tabId < 0 || !reference || typeof reference.elementToken !== 'string'
+    || typeof reference.frameToken !== 'string' || typeof reference.documentURL !== 'string'
+    || (!reference.documentId && (!Number.isInteger(reference.frameId) || reference.frameId < 0))) {
+    return Promise.reject(failed('録画する動画を一覧から選んでください。'));
+  }
+  const target = {tabId, ...(reference.documentId ? {documentIds:[reference.documentId]} : {frameIds:[reference.frameId]})};
+  let activation;
+  try {
+    activation = chrome.scripting.executeScript({target, func:controlPageVideo,
+      args:[{command:'inspect',token:crypto.randomUUID(),reference}]});
+  } catch (error) { return Promise.reject(failed(error)); }
+  let timer;
+  return Promise.race([Promise.resolve(activation),new Promise((_,reject)=>{
+    timer=setTimeout(()=>reject(new Error('元ページで動画の確認が応答しません。ページの状態を確認して、もう一度お試しください。')),5000);
+  })]).then(results => {
+    const response = results?.find(value => value.frameId === (reference.frameId || 0)
+      && (!reference.documentId || value.documentId === reference.documentId))?.result;
+    if (!response || response.error) throw failed(response?.error);
+    return response;
+  }, error => { throw failed(error); }).finally(()=>clearTimeout(timer));
 }

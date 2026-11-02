@@ -291,7 +291,8 @@ export function collect(previousURLs = []) {
           }
           if (videoElements.size < VIDEO_LIMIT) {
             videoElements.set(video.elementToken,video);
-            local.videoSources.set(video.elementToken,{currentSrc:el.currentSrc,srcObject:el.srcObject});
+            local.videoSources.set(video.elementToken,{currentSrc:el.currentSrc,srcObject:el.srcObject,
+              attributes:[el.getAttribute('src'),...Array.from(el.querySelectorAll('source'),node=>node.getAttribute('src'))]});
           }
           add(el.currentSrc,meta,base);
           for (const key of ['src','data-src','data-video-src','data-source','data-hls','data-dash']) add(el.getAttribute(key),{...meta,mime:key === 'data-hls' ? 'application/vnd.apple.mpegurl' : key === 'data-dash' ? 'application/dash+xml' : meta.mime},base);

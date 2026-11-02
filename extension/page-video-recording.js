@@ -3,7 +3,7 @@ export async function controlPageVideo(request) {
   const key = Symbol.for('VideoHarbor.videoRecording');
   const SLICE_BYTES = 192 * 1024, MAX_CHUNK = 4 * 1024 * 1024, MAX_QUEUE = 8 * 1024 * 1024;
   const LEASE_MS = 15000, MAX_MS = 30 * 60 * 1000;
-  const commands = ['prepare', 'poll', 'start', 'pause', 'resume', 'stop', 'close'];
+  const commands = ['inspect', 'prepare', 'poll', 'start', 'pause', 'resume', 'stop', 'close'];
   if (!request || !commands.includes(request.command) || !/^[a-f0-9-]{36}$/.test(request.token || '')) {
     return {error: '動画録画の指定が不正です。'};
   }
@@ -13,22 +13,62 @@ export async function controlPageVideo(request) {
     audio: value.audio, audioReason: value.audioReason || '', target: value.title, mimeType: value.recorder.mimeType,
     reason: value.reason || '', failure: value.failure || '', done: value.stopped && !value.queue.length && !value.pending,
   });
-  if (request.command === 'prepare') {
-    if (session && !session.closed) return {error: 'このページではすでに動画の録画を準備中か録画中です。停止してから再試行してください。'};
+  if (request.command === 'inspect' || request.command === 'prepare') {
+    if (request.command === 'prepare' && session && !session.closed) return {error: 'このページではすでに動画の録画を準備中か録画中です。停止してから再試行してください。'};
     const ref = request.reference, discovery = document.__videoHarborDiscovery;
     const video = discovery?.elements?.get(ref?.elementToken);
     if (!ref || discovery?.token !== ref.frameToken || document.URL !== ref.documentURL
       || video?.tagName !== 'VIDEO' || !video.isConnected) {
       return {error: '選んだ動画が見つかりません。元ページで再スキャンしてください。'};
     }
+    const sourceAttributes = () => [video.getAttribute('src'),
+      ...Array.from(video.querySelectorAll?.('source') || [], node => node.getAttribute('src'))];
     const scannedSource = discovery.videoSources?.get(ref.elementToken);
-    if (scannedSource && (scannedSource.currentSrc !== video.currentSrc || scannedSource.srcObject !== video.srcObject)) {
+    if (scannedSource && !scannedSource.currentSrc && !scannedSource.srcObject && !scannedSource.attributes) {
+      return {error: '選んだ動画の確認情報が古いため、元ページで再スキャンして選び直してください。'};
+    }
+    if (scannedSource && ((scannedSource.currentSrc && scannedSource.currentSrc !== video.currentSrc) || scannedSource.srcObject !== video.srcObject
+      || (scannedSource.attributes && JSON.stringify(scannedSource.attributes) !== JSON.stringify(sourceAttributes())))) {
       return {error: '選んだ動画の再生元が変わりました。再スキャンして選び直してください。'};
     }
     if (video.mediaKeys) return {error: '保護された動画は動画だけの録画に対応していません。'};
-    if (video.readyState < 2 || !video.videoWidth || !video.videoHeight || video.paused || video.ended) {
-      return {error: '元ページで選んだ動画を再生してから、録画を開始してください。'};
+    if (request.command === 'inspect') return {
+      currentTime: Number.isFinite(video.currentTime) ? Math.max(0, video.currentTime) : null,
+      duration: Number.isFinite(video.duration) ? video.duration : null,
+      paused: Boolean(video.paused), ended: Boolean(video.ended),
+    };
+    const before = {currentSrc: video.currentSrc, srcObject: video.srcObject, attributes: JSON.stringify(sourceAttributes())};
+    const sourceChangedWhileLoading = () => !video.isConnected || video.mediaKeys || video.srcObject !== before.srcObject
+      || (before.currentSrc && video.currentSrc !== before.currentSrc)
+      || JSON.stringify(sourceAttributes()) !== before.attributes;
+    if (video.ended) {
+      if (!request.restart) return {error: '動画の再生が終了しました。開始位置を確認して、もう一度録画を開始してください。'};
+      try { video.currentTime = 0; } catch { return {error: '動画を先頭に戻せませんでした。元ページで開始位置を確認してください。'}; }
     }
+    if (video.readyState < 2 || !video.videoWidth || !video.videoHeight || video.seeking) {
+      const preload = video.getAttribute('preload');
+      const changedPreload = video.readyState < 2 && video.preload !== 'auto';
+      try {
+        if (changedPreload) video.preload = 'auto';
+        const ready = await new Promise(resolve => {
+          const deadline = Date.now() + 3000;
+          const check = () => {
+            if (sourceChangedWhileLoading() || video.error) return resolve(false);
+            if (video.readyState >= 2 && video.videoWidth && video.videoHeight && !video.seeking) return resolve(true);
+            if (Date.now() >= deadline) return resolve(false);
+            setTimeout(check, 50);
+          };
+          check();
+        });
+        if (!ready) return {error: '動画の読み込みを準備できませんでした。元ページで動画を読み込み、もう一度録画を開始してください。'};
+      } finally {
+        // Only undo our own preload hint; preserve a site's concurrent choice.
+        if (changedPreload && video.preload === 'auto') {
+          if (preload === null) video.removeAttribute('preload'); else video.setAttribute('preload', preload);
+        }
+      }
+    }
+    if (sourceChangedWhileLoading()) return {error: '選んだ動画の再生元が変わりました。再スキャンして選び直してください。'};
     if (typeof video.captureStream !== 'function' || typeof MediaRecorder !== 'function'
       || !['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'].includes(request.mimeType)
       || !MediaRecorder.isTypeSupported(request.mimeType)) {
@@ -65,7 +105,7 @@ export async function controlPageVideo(request) {
         if (!request.audio || audioBlocked || track.readyState !== 'live' || track.muted) { stream.removeTrack(track); track.stop(); }
       }
       const recorder = new MediaRecorder(stream, {mimeType: request.mimeType, videoBitsPerSecond: 4000000});
-      session = {token: request.token, video, stream, recorder, audioReason: audioBlocked ? '元動画がミュートまたは音量0です。音声を含めるには元ページで音を出してから選び直してください。' : '', audio: stream.getAudioTracks().some(track => track.readyState === 'live' && !track.muted),
+      session = {token: request.token, video, stream, recorder, reference: ref, audioReason: audioBlocked ? '元動画がミュートまたは音量0です。音声を含めるには元ページで音を出してから選び直してください。' : '', audio: stream.getAudioTracks().some(track => track.readyState === 'live' && !track.muted),
         title: String(ref.title || video.getAttribute('aria-label') || video.getAttribute('title') || '選んだ動画').slice(0, 160),
         currentSrc: video.currentSrc, srcObject: video.srcObject, queue: [], queuedBytes: 0, pending: null,
         nextSequence: 1, lastAck: 0, stopped: false, closed: false, failure: '', reason: '', listeners: [],
@@ -146,11 +186,81 @@ export async function controlPageVideo(request) {
   if (request.command === 'close') { session.dispose(); return {closed: true}; }
   session.check();
   if (request.command === 'start') {
-    if (session.started || session.stopped || session.failure || session.video.paused || session.video.ended) {
-      return {error: '元ページで選んだ動画を再生してから、もう一度録画を開始してください。'};
+    if (session.started || session.stopped || session.failure || session.video.ended) {
+      return {error: '選んだ動画を録画できません。開始位置を確認して、もう一度録画を開始してください。'};
     }
-    try { session.recorder.start(500); session.started = true; session.activeAt = performance.now(); }
-    catch { session.stop('', '動画の録画を開始できませんでした。'); return {error: session.failure}; }
+    const value = session;
+    if (value.video.paused) {
+      const position = value.video.currentTime;
+      const positionChanged = () => value.video.seeking || (Number.isFinite(position) && Number.isFinite(value.video.currentTime)
+        && Math.abs(value.video.currentTime - position) > 0.05);
+      const ownsPlayback = () => value.video.isConnected && value.video.currentSrc === value.currentSrc && value.video.srcObject === value.srcObject;
+      const pauseOwnedPlayback = () => { if (ownsPlayback()) { try { value.video.pause(); } catch {} } };
+      let timer, failed = false, onPlay;
+      const startupErrors = new Set([
+        '動画の再生元が変わりました。選び直してください。',
+        '動画の再生位置が変わりました。開始位置を確認して、もう一度録画を開始してください。',
+        '動画の録画開始を中止しました。',
+        '動画の映像・音声構成が変わりました。選び直してください。',
+        '動画の録画を開始できませんでした。',
+      ]);
+      const cleanup = () => {
+        const current = globalThis[key];
+        if (current?.token === value.token) current.dispose();
+      };
+      // Chrome's old element-capture listeners can recreate audio providers on
+      // the next play after EOS, stealing audio from a stream prepared earlier.
+      // Recapture in the real play event, after those listeners, before the
+      // media clock advances. Preparation and all user decisions remain silent.
+      const recording = new Promise((resolve, reject) => {
+        onPlay = () => {
+          if (failed || !ownsPlayback()) { reject(new Error('動画の再生元が変わりました。選び直してください。')); return; }
+          if (positionChanged()) {
+            reject(new Error('動画の再生位置が変わりました。開始位置を確認して、もう一度録画を開始してください。')); return;
+          }
+          controlPageVideo({command:'prepare',token:value.token,reference:value.reference,
+            audio:value.audio,mimeType:value.recorder.mimeType}).then(prepared => {
+            const next = globalThis[key];
+            if (failed) { cleanup(); throw new Error('動画の録画開始を中止しました。'); }
+            if (prepared.error) throw new Error(prepared.error);
+            if (positionChanged()) {
+              cleanup(); throw new Error('動画の再生位置が変わりました。開始位置を確認して、もう一度録画を開始してください。');
+            }
+            if (!next || !prepared.available || next.audio !== value.audio
+              || next.stream.getVideoTracks().length !== value.stream.getVideoTracks().length
+              || next.stream.getAudioTracks().length !== value.stream.getAudioTracks().length) {
+              cleanup(); throw new Error('動画の映像・音声構成が変わりました。選び直してください。');
+            }
+            return controlPageVideo({command:'start',token:value.token});
+          }).then(started => {
+            if (started.error || started.state !== 'recording') throw new Error(started.error || '動画の録画を開始できませんでした。');
+            resolve();
+          }, reject).catch(reject);
+        };
+        value.video.addEventListener('play', onPlay, {once:true});
+      });
+      // Release the inspection-only streams before play; the replacement owns
+      // fresh recording clones. srcObject input tracks remain protected.
+      value.dispose();
+      try {
+        let playback;
+        try { playback = Promise.resolve(value.video.play()); } catch (error) { playback = Promise.reject(error); }
+        playback.then(() => { if (failed) pauseOwnedPlayback(); }, () => {});
+        await Promise.race([Promise.all([recording, playback]),new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('元動画を自動再生できませんでした。サイトの再生許可や読み込み状態を確認して、もう一度お試しください。')),3000);
+        })]);
+        session = globalThis[key];
+        if (!session || session.token !== value.token || session.closed || session.stopped || session.failure || session.video.paused) {
+          throw new Error('元動画を自動再生できませんでした。サイトの再生許可や読み込み状態を確認して、もう一度お試しください。');
+        }
+      } catch (error) {
+        failed = true; pauseOwnedPlayback(); cleanup();
+        return {error: startupErrors.has(error?.message) ? error.message : '元動画を自動再生できませんでした。サイトの再生許可や読み込み状態を確認して、もう一度お試しください。'};
+      } finally { clearTimeout(timer); value.video.removeEventListener('play', onPlay); }
+    } else {
+      try { value.recorder.start(500); value.started = true; value.activeAt = performance.now(); }
+      catch { value.stop('', '動画の録画を開始できませんでした。'); return {error: value.failure}; }
+    }
   } else if (request.command === 'pause') {
     if (session.recorder.state !== 'recording') return {error: '動画の録画を一時停止できませんでした。'};
     session.recorder.pause();

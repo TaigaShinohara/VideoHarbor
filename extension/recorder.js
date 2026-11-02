@@ -3,7 +3,7 @@ import { outputName } from './filenames.js';
 const MEMORY_STOP_BYTES = 256 * 1024 * 1024;
 const WRITE_QUEUE_STOP_BYTES = 32 * 1024 * 1024;
 const MAX_ACTIVE_MS = 30 * 60 * 1000;
-const BUSY_PHASES = new Set(['starting', 'awaiting-audio-decision', 'recording', 'paused', 'finalizing', 'saving']);
+const BUSY_PHASES = new Set(['starting', 'awaiting-position-decision', 'awaiting-audio-decision', 'recording', 'paused', 'finalizing', 'saving']);
 
 function supportedMime() {
   return ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm']
@@ -37,12 +37,14 @@ function displayTarget(stream) {
 
 /** Saving lives in this extension page; element capture stays in its exact source frame. */
 export class RecorderController {
-  constructor({ onUpdate = () => {}, source = {}, acquire, release, prepareVideo }) {
+  constructor({ onUpdate = () => {}, source = {}, acquire, release, prepareVideo, inspectVideo, activateVideo }) {
     this.onUpdate = onUpdate;
     this.source = source;
     this.acquire = acquire;
     this.release = release;
     this.prepareVideo = prepareVideo;
+    this.inspectVideo = inspectVideo;
+    this.activateVideo = activateVideo;
     this._phase = 'idle';
     this._message = '対象と音声、保存方法を選んで録画を開始してください。形式はWebMです。';
     this._pendingOutputHandle = null;
@@ -80,6 +82,8 @@ export class RecorderController {
       format: 'WebM',
       playbackBlocked: this._session?.audioContext?.state === 'suspended',
       controlPending: Boolean(this._session?.controlPending),
+      sourcePosition: this._pendingStart?.sourcePosition ?? 0,
+      sourceEnded: Boolean(this._pendingStart?.sourceEnded),
     };
   }
 
@@ -151,7 +155,14 @@ export class RecorderController {
     this._phase = 'starting';
     this._message = mode === 'video' ? '選んだ動画の映像と音声を確認しています。' : '録画の準備中です。共有する対象を確認してください。';
     let capturePromise;
+    let activationPromise;
     try {
+      if (mode === 'video' && this.activateVideo) {
+        // Dispatch from the actual Start click before any asynchronous lock or
+        // preparation. Chrome carries this gesture to a read-only source check.
+        activationPromise = Promise.resolve(this.activateVideo({reference}));
+        activationPromise.catch(() => {});
+      }
       if (mode === 'display') {
         // No lock, messaging or disk await may precede this call in the click handler.
         capturePromise = navigator.mediaDevices.getDisplayMedia({
@@ -160,9 +171,10 @@ export class RecorderController {
         });
       }
     } catch (error) {
-      capturePromise = Promise.reject(error);
+      if (mode === 'video') { activationPromise = Promise.reject(error); activationPromise.catch(() => {}); }
+      else capturePromise = Promise.reject(error);
     }
-    this._startingPromise = this._begin(op, capturePromise);
+    this._startingPromise = this._begin(op, capturePromise, activationPromise);
     this._emit();
     return this._startingPromise;
   }
@@ -173,6 +185,7 @@ export class RecorderController {
     op.cancelMessage = message;
     op.resolveCancellation();
     op.resolveAudioDecision?.(false);
+    op.resolvePositionDecision?.(false);
     // In the audio decision state sharing is already active. End it immediately.
     for (const track of op.stream?.getTracks() || []) {
       try { track.stop(); } catch { /* Stop the remaining tracks as well. */ }
@@ -214,13 +227,39 @@ export class RecorderController {
     op.audio = op.stream.getAudioTracks().some((track) => track.readyState !== 'ended');
   }
 
-  async _begin(op, capturePromise) {
+  async _confirmVideoPosition(op) {
+    if (!this.inspectVideo) return;
+    const source = await Promise.race([
+      this.inspectVideo({reference: op.reference}),
+      op.cancellation.then(() => { throw new DOMException('Cancelled', 'AbortError'); }),
+    ]);
+    if (op.cancelled) throw new DOMException('Cancelled', 'AbortError');
+    op.sourcePosition = Number.isFinite(source.currentTime) ? Math.max(0, source.currentTime) : 0;
+    op.sourceEnded = Boolean(source.ended);
+    if (op.sourcePosition <= 0.05 && !op.sourceEnded) return;
+    this._phase = 'awaiting-position-decision';
+    this._message = op.sourceEnded
+      ? '元動画は再生が終了しています。続けると先頭から再生して録画します。まだ録画・ファイルへの書き込みは始まっていません。'
+      : '元動画の再生位置が先頭ではありません。現在の位置から録画します。最初から録画する場合は、中止して元動画を先頭に戻してください。まだ録画・ファイルへの書き込みは始まっていません。';
+    const decision = new Promise(resolve => { op.resolvePositionDecision = resolve; });
+    this._emit();
+    if (!await decision) throw new DOMException('Cancelled', 'AbortError');
+    op.resolvePositionDecision = null;
+    op.positionConfirmed = true;
+    this._phase = 'starting';
+    this._message = '選んだ動画の録画を準備しています。';
+    this._emit();
+  }
+
+  async _begin(op, capturePromise, activationPromise) {
     try {
       if (op.mode === 'video') {
         await this.acquire('video');
         op.locked = true;
         if (op.cancelled) throw new DOMException('Cancelled', 'AbortError');
-        const preparation = Promise.resolve(this.prepareVideo({reference: op.reference, audio: op.audioRequested, mimeType: op.mime}));
+        if (activationPromise) await Promise.race([activationPromise, op.cancellation.then(() => { throw new DOMException('Cancelled', 'AbortError'); })]);
+        await this._confirmVideoPosition(op);
+        const preparation = Promise.resolve(this.prepareVideo({reference: op.reference, audio: op.audioRequested, mimeType: op.mime, restart: Boolean(op.sourceEnded)}));
         preparation.then(remote => {
           if (op.cancelled && op.remote !== remote) Promise.resolve(remote.close()).catch(() => {});
         }, () => {});
@@ -233,6 +272,9 @@ export class RecorderController {
           op.remote.addEventListener(type, ended);
           op.trackListeners.push([op.remote, ended, type]);
         }
+        // Metadata loading can restore a site's saved playback position. Read it
+        // again before recording or opening the output, while the source is paused.
+        if (!op.positionConfirmed) await this._confirmVideoPosition(op);
       } else if (op.mode === 'display') {
         await this._capture(op, capturePromise);
         await this.acquire('display');
@@ -331,6 +373,9 @@ export class RecorderController {
       this._emit();
       return true;
     } catch (error) {
+      // Stopping a failed remote recorder can dispatch a late stop event. Keep
+      // the original start failure instead of relabelling it as a cancellation.
+      const cancelled = cancellation(error) || op.cancelled;
       if (op.pendingSession) {
         op.pendingSession.cancelled = true;
         try { await op.pendingSession.recorder?.stop(); } catch { /* Still clean up the source below. */ }
@@ -338,13 +383,13 @@ export class RecorderController {
       this._removeTrackListeners(op);
       const releaseFailed = await this._cleanupResources(op);
       this._phase = this._restingPhase();
-      this._message = (cancellation(error) || op.cancelled)
+      this._message = cancelled
         ? (op.cancelMessage || (op.writerAttempted
           ? '録画の開始をキャンセルしました。前の録画は保持しています。次の録画では保存先を選び直してください。'
           : '録画の開始をキャンセルしました。前の録画と未使用の保存先は保持しています。'))
         : `${safeError(error)} 対象タブで拡張機能を開き直すと再試行できます。`;
-      if (!cancellation(error) && !op.cancelled && !this._result) this._phase = 'error';
-      if (op.writerAttempted && !(cancellation(error) || op.cancelled)) {
+      if (!cancelled && !this._result) this._phase = 'error';
+      if (op.writerAttempted && !cancelled) {
         this._message += ' 次の録画では保存先を選び直してください。';
       }
       if (releaseFailed) this._message += ' 録画制御の解除を確認できませんでした。次の開始前にこの画面を開き直してください。';
@@ -360,6 +405,13 @@ export class RecorderController {
     const op = this._pendingStart;
     if (this._phase !== 'awaiting-audio-decision' || !op || op.cancelled) return false;
     op.resolveAudioDecision?.(true);
+    return true;
+  }
+
+  continueFromPosition() {
+    const op = this._pendingStart;
+    if (this._phase !== 'awaiting-position-decision' || !op || op.cancelled) return false;
+    op.resolvePositionDecision?.(true);
     return true;
   }
 

@@ -4,7 +4,7 @@ import { MediaSaver, originPattern } from './media-save.js';
 import { outputOptions, validateOutputFormat } from './output-format.js';
 import { renderVideoGroups } from './workspace-videos.js';
 import { RecordingResultView } from './workspace-result.js';
-import { prepareVideoCapture } from './video-capture.js';
+import { prepareVideoCapture, inspectVideoCapture, activateVideoCapture } from './video-capture.js';
 import { groupVideos } from './video-view.js';
 import {resources,candidateLabel,videoReferences,referenceKey,videoReferenceId,displayText,videoGroupLabels} from './presentation.js';
 const KIND = 'videos';
@@ -283,7 +283,7 @@ async function jobAction(type) {
   try{applyState(await send(type));}catch(e){error(e);}finally{requestPending=false;updateSummary();}
 }
 function setupRecording() {
-  recorder = new RecorderController({source:state,onUpdate:updateRecording,acquire:async mode=>{try{return await send('capture',{mode});}catch(e){e.name='CaptureControlError';throw e;}},release:()=>send('release'),prepareVideo:async options=>{try{return await prepareVideoCapture({send,...options});}catch(e){e.name='CaptureControlError';throw e;}}});
+  recorder = new RecorderController({source:state,onUpdate:updateRecording,acquire:async mode=>{try{return await send('capture',{mode});}catch(e){e.name='CaptureControlError';throw e;}},release:()=>send('release'),activateVideo:options=>activateVideoCapture({tabId:state.tabId,...options}),inspectVideo:async options=>{try{return await inspectVideoCapture({send,...options});}catch(e){e.name='CaptureControlError';throw e;}},prepareVideo:async options=>{try{return await prepareVideoCapture({send,...options});}catch(e){e.name='CaptureControlError';throw e;}}});
   recordingResultView=new RecordingResultView({controller:recorder,showDownload:downloadId=>send('show-download',{downloadId})});
   initialRecorderMessage=recorder.snapshot().message;
   $('download-tab').addEventListener('click',()=>showView('download'));$('record-tab').addEventListener('click',()=>showView('record'));
@@ -311,8 +311,9 @@ function setupRecording() {
   });
   $('pause-record').addEventListener('click',()=>{Promise.resolve(recorder.snapshot().phase==='paused' ? recorder.resume() : recorder.pause()).catch(error);});
   $('stop-record').addEventListener('click',()=>recorder.stop().catch(error));
+  $('continue-from-position').addEventListener('click',()=>recorder.continueFromPosition());
   $('continue-without-audio').addEventListener('click',()=>recorder.continueWithoutAudio());
-  for(const id of ['reselect-capture','cancel-record-start']) $(id).addEventListener('click',async()=>{
+  for(const id of ['reselect-capture','cancel-record-start','cancel-position-start']) $(id).addEventListener('click',async()=>{
     try {
       await recorder.cancelStart();
       if(!$('start-record').disabled) $('start-record').focus();
@@ -326,13 +327,13 @@ function setupRecording() {
   updateRecording(recorder.snapshot());
 }
 function updateRecording(s) {
-  const phases={idle:'待機中',starting:'録画を準備中','awaiting-audio-decision':'音声を確認してください · 録画未開始',recording:'録画中',paused:'一時停止中',finalizing:'保存を確定中',ready:'録画できました · 保存してください',saving:'ファイルを保存中',saved:'ファイル保存完了',error:'録画・保存に問題が起きました'};
-  const awaiting=s.phase==='awaiting-audio-decision';
-  const busy=['starting','awaiting-audio-decision','recording','paused','finalizing','saving'].includes(s.phase);
+  const phases={idle:'待機中',starting:'録画を準備中','awaiting-position-decision':'再生位置を確認してください · 録画未開始','awaiting-audio-decision':'音声を確認してください · 録画未開始',recording:'録画中',paused:'一時停止中',finalizing:'保存を確定中',ready:'録画できました · 保存してください',saving:'ファイルを保存中',saved:'ファイル保存完了',error:'録画・保存に問題が起きました'};
+  const awaiting=s.phase==='awaiting-audio-decision',positionDecision=s.phase==='awaiting-position-decision';
+  const busy=['starting','awaiting-position-decision','awaiting-audio-decision','recording','paused','finalizing','saving'].includes(s.phase);
   const focused=document.activeElement, phaseChanged=previousRecordingPhase!==s.phase;
   const mode=document.querySelector('[name="record-mode"]:checked').value, disk=$('record-output').value==='file';
   const reference=selectedVideo();
-  const targetHint=mode==='video' ? (reference ? '選んだ動画の映像と音声だけを録画します。結果は停止後に再生して確認できます。' : '元ページで動画を再生して再スキャンし、録画する動画を選んでください。') : mode==='tab' ? '元のタブ全体を録画します。タブ内の他の音も含まれます。' : '開始後に共有する対象を選びます。別のタブも選べます。';
+  const targetHint=mode==='video' ? (reference ? '録画開始に合わせて元動画を再生します。選んだ動画の映像と音声だけを録画します。' : '元ページの動画を再スキャンし、録画する動画を選んでください。') : mode==='tab' ? '元のタブ全体を録画します。タブ内の他の音も含まれます。' : '開始後に共有する対象を選びます。別のタブも選べます。';
   $('video-choice').hidden=mode!=='video';
   $('locate-record-video').disabled=busy || !reference;
   const thumbnail=$('record-video-image');
@@ -365,10 +366,14 @@ function updateRecording(s) {
   $('pause-record').hidden=!['recording','paused'].includes(s.phase);$('pause-record').textContent=s.phase==='paused' ? '再開' : '一時停止';
   $('stop-record').hidden=!['recording','paused'].includes(s.phase);
   $('audio-decision').hidden=!awaiting;
+  $('position-decision').hidden=!positionDecision;
+  const sourceCentiseconds=Math.floor(Math.max(0,s.sourcePosition || 0)*100),minutes=Math.floor(sourceCentiseconds/6000);
+  $('source-position').textContent=`元動画の再生位置: ${minutes}:${((sourceCentiseconds%6000)/100).toFixed(2).padStart(5,'0')}`;
+  $('continue-from-position').textContent=s.sourceEnded ? '先頭から録画' : 'この位置から録画';
   $('save-record').hidden=!s.resultReady || s.resultSaved || busy;
   $('discard-record').hidden=!s.resultReady || busy;
   const seconds=Math.floor((s.elapsed||0)/1000);$('record-time').textContent=`${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}`;$('record-size').textContent=formatBytes(s.bytes);
-  const showCaptureDetails=Boolean(s.method) && !['starting','awaiting-audio-decision'].includes(s.phase);
+  const showCaptureDetails=Boolean(s.method) && !['starting','awaiting-position-decision','awaiting-audio-decision'].includes(s.phase);
   $('record-metrics').hidden=!showCaptureDetails;
   $('record-description').hidden=!showCaptureDetails;
   $('record-description').textContent=s.method ? `${s.method==='video' ? '選んだ動画のみ' : s.method==='tab' ? '元のタブ全体' : 'Chromeで選んだ共有対象'} · ${displayText(s.target || state.title)} · WebM · ${s.audio ? '音声あり' : '音声なし'}${busy ? ' · この作業タブを閉じないでください' : ''}` : '';
@@ -378,7 +383,7 @@ function updateRecording(s) {
   const live=['recording','paused','awaiting-audio-decision'].includes(s.phase) && Boolean(recorder?.stream);
   $('preview').hidden=!live;$('preview-placeholder').hidden=live;$('live-badge').hidden=!(live || (s.method==='video' && ['recording','paused'].includes(s.phase)));
   $('live-label').textContent=awaiting ? '共有中 · 録画未開始' : s.phase==='paused' ? '一時停止中' : '録画中';
-  const videoStage=s.method==='video' && ['starting','awaiting-audio-decision','recording','paused'].includes(s.phase) ? ['play',s.phase==='starting' ? '選んだ動画を確認中' : awaiting ? '録画はまだ始まっていません' : s.phase==='paused' ? '動画の録画を一時停止中' : '選んだ動画を録画中',`${s.target || reference?.title || '選んだ動画'} · 結果は停止後に確認できます。`] : null;
+  const videoStage=s.method==='video' && ['starting','awaiting-position-decision','awaiting-audio-decision','recording','paused'].includes(s.phase) ? ['play',s.phase==='starting' ? '選んだ動画を確認中' : (awaiting || positionDecision) ? '録画はまだ始まっていません' : s.phase==='paused' ? '動画の録画を一時停止中' : '選んだ動画を録画中',`${s.target || reference?.title || '選んだ動画'} · 結果は停止後に確認できます。`] : null;
   const stage=videoStage || {idle:['screen','録画の準備',targetHint],starting:['refresh','共有する対象を確認','Chromeの案内に従ってください。'],finalizing:['refresh','保存を確定中','この作業タブを閉じないでください。'],saving:['refresh','ファイルを保存中','保存先を確認してください。'],ready:['download','録画できました','ファイルへ保存して完了です。'],saved:['check','保存しました','直前の録画 · WebM'],error:['info','録画・保存を確認','下のメッセージを確認してください。']}[s.phase];
   if(stage) {
     $('stage-icon').querySelector('use').setAttribute('href',`icons.svg#${stage[0]}`);
@@ -387,7 +392,7 @@ function updateRecording(s) {
   recordingResultView?.update(s);
   if(layoutMoved && focused?.isConnected && !focused.closest('[hidden]') && !focused.disabled)focused.focus({preventScroll:true});
   if(phaseChanged && focused && (focused.closest('[hidden]') || focused.disabled)) $('record-state').focus({preventScroll:true});
-  if(phaseChanged && awaiting) $('record-state').focus({preventScroll:true});
+  if(phaseChanged && (awaiting || positionDecision)) $('record-state').focus({preventScroll:true});
   // A cancelled/failed start returns to a usable setting without stealing timer focus.
   if(previousRecordingPhase==='starting' && !busy && document.activeElement===$('record-state') && !$('start-record').disabled) $('start-record').focus({preventScroll:true});
   previousRecordingPhase=s.phase;
