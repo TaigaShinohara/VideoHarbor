@@ -1,5 +1,15 @@
 # QA — v0.1
 
+## 録画開始時の自動再生と位置確認 — 2026-11-02 / v0.6.2
+
+- `npm test`: 366件PASS、失敗・SKIPなし。`npm run check` / `git diff --check`: PASS。位置確認前のcapture/再生/writer禁止、確認後の音声判断、中止時の前結果・未使用保存先維持、読み込み/再生イベント中の位置復元、同期クリック伝達、再生拒否・タイムアウト・遅延処理、srcObject入力track保護を検証した。
+- Chrome 156.0.8078.80 / Chrome for Testing 116.0.5845.96の両方で `npm run test:video` PASS。最新mainの録画候補重複修正も統合した最終runtimeと照合した。各12本の実WebMをffprobeとffmpegで全編decodeし、対象320×180映像・対象音の分離、背景/pause/seek/scroll、CORS、MSE映像、同別origin frame、srcObject、実OPFS writer/closeを確認した。
+- 自動再生制限を無効にする起動フラグは使用しない。新しいoriginの未操作・未再生・preload=none動画で、元ページのuserActivationが発見後もfalseであることをCDPのuserGesture=falseで読み、実際の拡張Startクリックだけで再生・録画・保存できることを確認した。Playwright evaluate自身が操作権を与える影響を避けている。
+- 一時停止した3秒位置の警告・中止・位置保持とロック解放、確認後の現在位置からの録画、合成したplay拒否の正しいエラー表示、拒否後に終了済み動画を先頭から再録画して映像・音声付きファイルができることを確認。試験fixtureにHTTP Range応答を追加し、実際に3秒へseekできたことも開始前に検証する。録画候補は8代表、query違いframeを追加すると9代表になる回帰も保持した。
+- Chromeの終了後再開における音声取得競合を実際に再現し、実playイベント内の再取得で対処した。独立レビューは最終ガードとmain統合を含め修正必須の指摘なし。1280/360/320pxで横方向overflowなし、320pxの警告・続行/中止ボタンをAIの画像確認で確認した。
+- 追加の情報監査では現行treeの検出0件。ローカルGitの既存test blobに4件の履歴パターン検出があり、コマンド全体は失敗扱い（合成テストの記述で、今回の現行変更の検出ではない）。履歴を書き換えたり監査規則を緩めたりしていない。
+- 未確認: 本人の任意の実サイト、実OS picker、物理スピーカーでの聴取、人間の体験、30分実時間/OSスリープ。合成拒否試験を実サイトの拒否動作と同一視しない。追加権限・外部依存・解析送信はない。
+
 ## 録画対象selectの重複を解消 — 2026-11-02
 
 - `npm test`: 336件PASS、失敗・SKIPなし。表示ラベルの回帰2件を追加し、カードとselectの無題番号・URL伏字・元参照の保持を検証。`npm run check` / `git diff --check`: PASS。

@@ -207,7 +207,10 @@ try {
   console.log('video-only QA: source playback ready');
   for(const frame of page.frames().filter(frame=>frame!==page.mainFrame())) {
     await frame.evaluate(()=>{const button=document.createElement('button');button.id='qa-prepare-frame';button.textContent='Prepare embedded fixture';document.body.prepend(button);});
-    await frame.locator('#qa-prepare-frame').click();await frame.evaluate(async()=>{await document.querySelector('video').play();});
+    await frame.locator('#qa-prepare-frame').click();
+    // Keep the same-URL clone paused, so the top-page target remains the one
+    // representative without manually playing it before the autoplay test.
+    if(frame.url()!==origin+'/frame')await frame.evaluate(async()=>{await document.querySelector('video').play();});
   }
   const tab=await worker.evaluate(async url=>(await chrome.tabs.query({})).find(tab=>tab.url===url+'/'),origin);
   const [manager]=await Promise.all([context.waitForEvent('page'),worker.evaluate(tab=>globalThis.__openWorkspace(tab),tab)]);
