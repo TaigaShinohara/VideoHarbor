@@ -123,14 +123,33 @@ async function setTargetPosition(page,time) {
 async function stopped(manager) {
   await manager.waitForFunction(()=>['ready','saved','error'].includes(document.querySelector('#record-state').dataset.state),{},{timeout:15000});
 }
+async function recordingSource(manager,title) {
+  for(const page of manager.context().pages())for(const frame of page.frames()) {
+    if(frame.url().startsWith('chrome-extension:'))continue;
+    const video=frame.locator(`video[title=${JSON.stringify(title)}]`);
+    if(await video.count()===1)return video;
+  }
+  throw new Error('The selected source video is missing from the fixture: '+title);
+}
+async function assertSourcePaused(source) {
+  const before=await source.evaluate(video=>({paused:video.paused,time:video.currentTime}));
+  assert.equal(before.paused,true,'recording Stop also pauses the selected source');
+  await sleep(250);
+  const after=await source.evaluate(video=>({paused:video.paused,time:video.currentTime}));
+  assert.equal(after.paused,true,'the source remains paused after recording finalizes');
+  assert.ok(Math.abs(after.time-before.time)<0.01,'the paused source position does not advance after Stop');
+}
 async function normalRecording(manager,title,name,{audio=true,color='red',frequency=440,duration=1000,fromSelector=false}={}) {
   console.log('video-only QA: '+name);
   await select(manager,title,fromSelector);await manager.locator('#record-audio').setChecked(audio);await start(manager);
   assert.equal(await manager.locator('#record-state').getAttribute('data-state'),'recording',(await manager.locator('#record-message').textContent())+' '+JSON.stringify(await manager.evaluate(()=>({error:globalThis.__qaStartError,requests:globalThis.__qaVideoRequests}))));
+  const source=await recordingSource(manager,title);
+  assert.equal(await source.evaluate(video=>video.paused),false,'the selected source is playing while recording');
   await sleep(duration);await manager.locator('#stop-record').click();await stopped(manager);
+  await assertSourcePaused(source);
   assert.equal(await manager.locator('#record-state').getAttribute('data-state'),'ready',await manager.locator('#record-message').textContent());
   const path=await getSavedRecording(manager,name),data=await analyze(path,{audio,color,frequency});
-  results.push({test:name,...data});await discard(manager);return path;
+  results.push({test:name,sourcePausedOnStop:true,...data});await discard(manager);return path;
 }
 try {
   const target=await makeVideo('target','red',440),other=await makeVideo('other','blue',1200),silent=await makeVideo('silent','green',0),mse=await makeVideo('mse','red',0);
@@ -185,9 +204,11 @@ try {
   firstManager.on('dialog',dialog=>dialog.accept());firstManager.on('pageerror',error=>pageErrors.push(error.message));await firstManager.waitForFunction(()=>document.querySelector('#count').textContent&&!document.querySelector('#scan').disabled);
   const firstCDP=await context.newCDPSession(firstManager);await firstCDP.send('Browser.setDownloadBehavior',{behavior:'allow',downloadPath:downloadFolder,eventsEnabled:true});
   assert.equal(await firstActivation(),false,'discovery did not activate the source page');
-  await normalRecording(firstManager,'初回未再生動画','fresh-origin-default-policy',{fromSelector:true});
+  // Chrome 116 can delay its first captured video frame during cold startup;
+  // keep the frame-span/decode checks and use a two-second first sample.
+  await normalRecording(firstManager,'初回未再生動画','fresh-origin-default-policy',{fromSelector:true,duration:2000});
   assert.equal(await firstActivation(),true,'the real extension Start gesture reaches the selected source frame');
-  assert.equal(await firstSource.locator('video').evaluate(video=>video.paused),false,'default-policy auto playback succeeds without prior source interaction');
+  assert.equal(await firstSource.locator('video').evaluate(video=>video.paused),true,'default-policy auto playback is paused again by recording Stop');
   await firstManager.close();await firstSource.close();
 
   const page=await context.newPage();page.on('pageerror',error=>pageErrors.push(error.message));await page.goto(origin);console.log('video-only QA: preparing source playback');
@@ -226,7 +247,8 @@ try {
   console.log('video-only QA: start a never-played source automatically');
   assert.deepEqual(await page.locator('#target').evaluate(video=>({paused:video.paused,time:video.currentTime})),{paused:true,time:0},'the user did not play the target first');
   await normalRecording(manager,'赤い対象動画','unplayed-autostart',{fromSelector:true});
-  assert.equal(await page.locator('#target').evaluate(video=>video.paused),false,'starting video-only recording also plays the source');
+  assert.equal(await page.locator('#target').evaluate(video=>video.paused),true,'recording Stop pauses the automatically played source');
+  assert.equal(await page.locator('#other').evaluate(video=>video.paused),false,'Stop does not pause an unrelated video on the page');
   await scan(manager);
 
   console.log('video-only QA: warn before playing a paused source from its current position');
@@ -245,6 +267,17 @@ try {
   assert.equal(await manager.evaluate(async()=>Boolean((await chrome.storage.session.get('captureLock')).captureLock)),false,'position cancellation releases recording ownership');
   await normalRecording(manager,'赤い対象動画','confirmed-current-position',{fromSelector:true});
   assert.ok(await page.locator('#target').evaluate(video=>video.currentTime)>3.25,'confirmation plays from the accepted current position');
+
+  console.log('video-only QA: Stop pauses the source even while the recorder is paused');
+  await select(manager,'赤い対象動画',true);await start(manager);
+  assert.equal(await manager.locator('#record-state').getAttribute('data-state'),'recording',JSON.stringify(await manager.evaluate(()=>({message:document.querySelector('#record-message').textContent,requests:globalThis.__qaVideoRequests}))));
+  await sleep(900);await manager.locator('#pause-record').click();await manager.waitForFunction(()=>document.querySelector('#record-state').dataset.state==='paused');
+  const playingPosition=await page.locator('#target').evaluate(video=>{if(video.paused)throw new Error('Recorder pause should keep source playback running');return video.currentTime;});
+  await sleep(250);
+  assert.ok(await page.locator('#target').evaluate(video=>video.currentTime)>playingPosition+0.05,'source playback continues during recorder Pause');
+  await manager.locator('#stop-record').click();await stopped(manager);await assertSourcePaused(page.locator('#target'));
+  const pausedOutput=await getSavedRecording(manager,'stop-while-recorder-paused');
+  results.push({test:'stop-while-recorder-paused',sourcePausedOnStop:true,...await analyze(pausedOutput)});await discard(manager);
 
   console.log('video-only QA: a rejected play request fails without capturing the page');
   await setTargetPosition(page,0);
@@ -291,13 +324,13 @@ try {
 
   console.log('video-only QA: record target with background/pause/seek');
   await select(manager,'赤い対象動画');await screenshot(manager,'prepare');await start(manager);
-  assert.equal(await manager.locator('#record-state').getAttribute('data-state'),'recording',(await manager.locator('#record-message').textContent())+' '+JSON.stringify(await manager.evaluate(()=>({error:globalThis.__qaStartError,requests:globalThis.__qaVideoRequests}))));
+  assert.equal(await manager.locator('#record-state').getAttribute('data-state'),'recording',(await manager.locator('#record-message').textContent())+' '+JSON.stringify({source:await page.locator('#target').evaluate(video=>({time:video.currentTime,paused:video.paused,seeking:video.seeking,readyState:video.readyState})),requests:await manager.evaluate(()=>globalThis.__qaVideoRequests)}));
   await manager.bringToFront();await sleep(1100);await screenshot(manager,'recording');
   await manager.locator('#pause-record').click();await manager.waitForFunction(()=>document.querySelector('#record-state').dataset.state==='paused');
   await sleep(200);await manager.locator('#pause-record').click();await manager.waitForFunction(()=>document.querySelector('#record-state').dataset.state==='recording');
   await page.evaluate(async()=>{const target=document.querySelector('#target');target.pause();await new Promise(resolve=>setTimeout(resolve,200));target.currentTime=3;await target.play();target.style.width='75px';scrollTo(0,document.body.scrollHeight);});
   await sleep(1100);assert.equal(await manager.locator('#record-state').getAttribute('data-state'),'recording','source pause, seek, scroll and resizing do not turn into a capture failure');
-  await manager.locator('#stop-record').click();await stopped(manager);await screenshot(manager,'result');
+  await manager.locator('#stop-record').click();await stopped(manager);await assertSourcePaused(page.locator('#target'));await screenshot(manager,'result');
   assert.equal(await manager.locator('#record-state').getAttribute('data-state'),'ready',await manager.locator('#record-message').textContent());
   await manager.locator('#play-result').click();await manager.waitForFunction(()=>{const video=document.querySelector('#result-playback');return !video.hidden&&video.readyState>=2;});
   const output=await getSavedRecording(manager,'selected-only');results.push({test:'selected-only-background-pause-seek-scroll',...await analyze(output)});await discard(manager);
@@ -336,7 +369,7 @@ try {
   console.log('video-only QA: real OPFS sequential writer');
   await select(manager,'赤い対象動画');await manager.locator('.output-settings > summary').click();await manager.locator('#record-output').selectOption('file');await manager.locator('#choose-file').click();
   await start(manager);assert.equal(await manager.locator('#record-state').getAttribute('data-state'),'recording');await sleep(900);
-  await manager.locator('#stop-record').click();await stopped(manager);assert.equal(await manager.locator('#record-state').getAttribute('data-state'),'saved');
+  await manager.locator('#stop-record').click();await stopped(manager);await assertSourcePaused(page.locator('#target'));assert.equal(await manager.locator('#record-state').getAttribute('data-state'),'saved');
   const streamedPath=join(scratch,'real-opfs-streamed.webm');await writeFile(streamedPath,Buffer.from(await manager.evaluate(async()=>[...new Uint8Array(await(await window.__qaOutput.getFile()).arrayBuffer())])));
   results.push({test:'real-opfs-sequential-writer',...await analyze(streamedPath)});await discard(manager);await manager.locator('#record-output').selectOption('memory');
 
