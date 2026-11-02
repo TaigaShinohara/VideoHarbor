@@ -122,7 +122,9 @@ function updateMediaUI() {
   }
   for(const el of document.querySelectorAll('.media-save')) {
     const url=elementURL(el),job=mediaSaver.status(url);
-    el.textContent=job?.status==='permission' ? '配信元を許可して保存' : job?.blob ? 'ファイル保存を再試行' : '保存';
+    const text=job?.status==='permission' ? '配信元を許可して保存' : job?.blob ? 'ファイル保存を再試行' : '保存';
+    const iconName=job?.status==='permission' ? 'external' : job?.blob ? 'refresh' : 'download';
+    el.replaceChildren(icon(iconName),document.createTextNode(text));
     el.setAttribute('aria-label',`${el.dataset.displayName || candidateLabel(url)} · ${candidateLabel(url)}${job?.status==='permission' ? 'の配信元を許可して保存' : 'を保存'}`);
   }
   for(const el of document.querySelectorAll('.permission-sites')) {
@@ -132,7 +134,8 @@ function updateMediaUI() {
   updateOutputResults();
 }
 function outputFolderButton(id) {
-  const button=element('button','secondary show-file','保存場所を表示');button.dataset.downloadId=String(id);
+  const button=element('button','secondary show-file');button.dataset.downloadId=String(id);
+  button.append(icon('folder'),document.createTextNode('保存場所を表示'));
   let pending=false;
   button.addEventListener('click',async()=>{
     if(pending)return;pending=true;button.setAttribute('aria-busy','true');
@@ -159,7 +162,10 @@ function updateOutputResults() {
   for(const button of document.querySelectorAll('.direct-save,.media-save')) {
     const url=elementURL(button),saved=jobFor(url)?.status==='complete';
     button.classList.toggle('primary',!saved);button.classList.toggle('secondary',saved);
-    if(saved){button.textContent='もう一度保存';button.setAttribute('aria-label',`${button.dataset.displayName || candidateLabel(url)}をもう一度保存`);}
+    if(saved){
+      button.replaceChildren(icon('refresh'),document.createTextNode('もう一度保存'));
+      button.setAttribute('aria-label',`${button.dataset.displayName || candidateLabel(url)}をもう一度保存`);
+    }
   }
   const completed=[...(state.history || []),...state.jobs,...mediaSaver.results.values()].filter(job=>job.status==='complete' && Number.isSafeInteger(job.downloadId));
   const records=[...new Map(completed.map(job=>[job.downloadId,job])).values()].slice(-50).reverse();
@@ -333,7 +339,10 @@ function updateRecording(s) {
   const focused=document.activeElement, phaseChanged=previousRecordingPhase!==s.phase;
   const mode=document.querySelector('[name="record-mode"]:checked').value, disk=$('record-output').value==='file';
   const reference=selectedVideo();
-  const targetHint=mode==='video' ? (reference ? '録画開始に合わせて元動画を再生します。選んだ動画の映像と音声だけを録画します。' : '元ページの動画を再スキャンし、録画する動画を選んでください。') : mode==='tab' ? '元のタブ全体を録画します。タブ内の他の音も含まれます。' : '開始後に共有する対象を選びます。別のタブも選べます。';
+  let targetHint=mode==='video' ? (reference ? '録画開始に合わせて元動画を再生します。選んだ動画の映像と音声だけを録画します。' : '元ページの動画を再スキャンし、録画する動画を選んでください。') : mode==='tab' ? '元のタブ全体を録画します。タブ内の他の音も含まれます。' : '開始後に共有する対象を選びます。別のタブも選べます。';
+  if(s.recorderAvailable===false && s.phase==='idle') {
+    targetHint='この環境ではブラウザ内録画が制限されています。iOS/Androidの標準画面収録をご利用いただくか、「動画を保存」をお試しください。';
+  }
   $('video-choice').hidden=mode!=='video';
   $('locate-record-video').disabled=busy || !reference;
   const thumbnail=$('record-video-image');
