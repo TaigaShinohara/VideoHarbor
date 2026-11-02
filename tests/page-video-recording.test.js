@@ -444,3 +444,15 @@ test('native resumed clock rebasing is bounded while opening and explicit seeks 
     assert.equal(h.video.paused,true);
   });
 });
+
+test('final cleanup respects user playback resumed after an already-paused or ended source was stopped',async t=>{
+  for(const ended of [false,true])await t.test(ended ? 'ended source' : 'already paused source',async sub=>{
+    const h=harness(sub);await h.command('prepare');await h.command('start');
+    h.video.paused=true;h.video.ended=ended;h.recorder.finalBlob=new Blob(['tail']);
+    await h.command('stop');const tail=await h.command('poll');
+    assert.equal(Buffer.from(tail.chunk.base64,'base64').toString(),'tail');await h.command('poll',{ack:1});
+    h.video.ended=false;await h.video.play();
+    const pauseCalls=h.video.pauseCalls;await h.command('close');
+    assert.equal(h.video.paused,false);assert.equal(h.video.pauseCalls,pauseCalls);
+  });
+});

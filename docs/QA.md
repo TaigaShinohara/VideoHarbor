@@ -2,8 +2,8 @@
 
 ## 録画停止時に元動画も一時停止 — 2026-11-02 / v0.6.3
 
-- `npm test`: 384件PASS、失敗・SKIPなし。`npm run check` / `git diff --check`: PASS。録画中/録画一時停止中からの停止、最終chunk/ACK、準備キャンセル、URL/srcObject/src属性/document差替え、pause失敗と後処理を確認した。
-- Chrome156.0.8078.80 / Chrome116.0.5845.96の両方で `npm run test:video` PASS。各13本のWebMを全編decode。停止した対象のpausedと250ms後の再生位置不変、別動画の再生継続、録画一時停止中からの停止、同別origin iframe・MSE・srcObject入力track維持・OPFS等を確認。両試験copyは最終runtimeと照合済み。
+- `npm test`: 387件PASS、失敗・SKIPなし。`npm run check` / `git diff --check`: PASS。録画中/録画一時停止中からの停止、最終chunk/ACK、準備キャンセル、URL/srcObject/src属性/document差替え、pause失敗と後処理を確認した。停止時に元動画がすでに停止/終了していてもその判断を消費し、保存確定中に本人が再開した再生を後片付けで止めない回帰を追加した。
+- Chrome156.0.8078.80 / Chrome116.0.5845.96の両方で `npm run test:video` PASS。各13本のWebMを全編decode。停止した対象のpausedと250ms後の再生位置不変、別動画の再生継続、録画一時停止中からの停止、同別origin iframe・MSE・srcObject入力track維持・OPFS等を確認。実OPFS writerのcloseだけを遅延させ、保存確定中の手動再生がremote.close/dispose後も継続することも両版で確認した。両試験copyは最終runtimeと照合済み。
 - 任意の途中位置で停止→再録画すると、Chromeが停止中のDOM位置と内部時計を約46～63ms再同期し、従来の50ms判定が誤拒否した。実測では62.5msの位置変化に対し実経過0.7msだったため、単なるイベント待ち時間と区別した。シーク履歴を監視し、途中位置に限定した100ms補正・先頭付近の基準・play後の厳しい準備幅を別々に試験した。100msは今回の有限の互換方針で、任意のブラウザの保証値ではない。
 - Chrome116では初回の映像出力が遅れることがあり、1秒の合成録画が複数frame判定に届かない試験が1回あった。比較プローブでは停止連動なしでも初PTS0.564秒、連動あり0.461秒、前版の成功成果物でも0.598秒で、初期化遅延と今回の停止連動を分けた。最終試験は初回サンプルだけ2秒とし、色・音声・全編decode・映像PTS幅0.25秒超の基準は維持。Chrome116の短い初回録画の冒頭遅延は解消済みとは扱わない。
 - 独立レビューで停止対象・最終データ・失敗/破棄時の資源所有・時計再同期の扱いに修正必須の指摘なし。録画一時停止ボタンの元動画再生は従来どおり。追加権限・依存・通信なし。

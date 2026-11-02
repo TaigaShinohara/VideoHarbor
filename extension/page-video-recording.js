@@ -122,10 +122,11 @@ export async function controlPageVideo(request) {
       const pauseStartedSource = () => {
         // Only pause the source this recording actually started. Inspection-only
         // preparation and a replacement video must keep their playback state.
-        if (!value.started || value.sourcePauseAttempted || !video.isConnected || document.URL !== ref.documentURL
+        if (!value.started || value.sourcePauseAttempted) return;
+        value.sourcePauseAttempted = true;
+        if (!video.isConnected || document.URL !== ref.documentURL
           || video.currentSrc !== value.currentSrc || video.srcObject !== value.srcObject
           || JSON.stringify(sourceAttributes()) !== before.attributes || video.paused || video.ended) return;
-        value.sourcePauseAttempted = true;
         try { video.pause(); }
         catch { value.reason = [value.reason, '元動画を一時停止できませんでした。元ページで停止してください。'].filter(Boolean).join(' '); }
       };

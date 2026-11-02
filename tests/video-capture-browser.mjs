@@ -359,19 +359,43 @@ try {
   assert.equal(await page.evaluate(()=>originalSyntheticStream.getTracks().every(track=>track.readyState==='live')),true,'capture cleanup preserves the original srcObject tracks');
 
 
-  // Only the picker boundary is replaced; the origin-private handle, writable,
-  // ordered writes, close and getFile are real browser implementations.
+  // The picker is replaced, and writer.close is delayed behind a test barrier.
+  // The origin-private handle and every actual write/close/getFile remain real.
   await manager.evaluate(async()=>{
     const directory=await navigator.storage.getDirectory();
     window.__qaOutput=await directory.getFileHandle('video-only-streamed.webm',{create:true});
+    const createWritable=window.__qaOutput.createWritable.bind(window.__qaOutput);
+    window.__qaOutput.createWritable=async()=>{
+      const writable=await createWritable();
+      return {
+        write:chunk=>writable.write(chunk),abort:()=>writable.abort(),
+        close:async()=>{
+          window.__qaCloseEntered=true;
+          await new Promise(resolve=>{window.__qaReleaseClose=resolve;});
+          await writable.close();
+        },
+      };
+    };
     window.showSaveFilePicker=async()=>window.__qaOutput;
   });
   console.log('video-only QA: real OPFS sequential writer');
   await select(manager,'赤い対象動画');await manager.locator('.output-settings > summary').click();await manager.locator('#record-output').selectOption('file');await manager.locator('#choose-file').click();
   await start(manager);assert.equal(await manager.locator('#record-state').getAttribute('data-state'),'recording');await sleep(900);
-  await manager.locator('#stop-record').click();await stopped(manager);await assertSourcePaused(page.locator('#target'));assert.equal(await manager.locator('#record-state').getAttribute('data-state'),'saved');
+  // A user can already have paused the player before stopping the recorder.
+  await page.locator('#target').evaluate(video=>video.pause());
+  await manager.locator('#stop-record').click();
+  await manager.waitForFunction(()=>window.__qaCloseEntered&&document.querySelector('#record-state').dataset.state==='finalizing',{},{timeout:15000});
+  await assertSourcePaused(page.locator('#target'));
+  // Resuming while the real file close is pending must survive final cleanup.
+  await page.locator('#target').evaluate(video=>video.play());
+  const resumedAt=await page.locator('#target').evaluate(video=>video.currentTime);
+  await manager.evaluate(()=>window.__qaReleaseClose());await stopped(manager);
+  assert.equal(await manager.locator('#record-state').getAttribute('data-state'),'saved');
+  await sleep(250);
+  assert.equal(await page.locator('#target').evaluate(video=>video.paused),false,'final cleanup preserves a user resume during delayed file close');
+  assert.ok(await page.locator('#target').evaluate(video=>video.currentTime)>resumedAt+0.05,'the resumed source keeps advancing after final cleanup');
   const streamedPath=join(scratch,'real-opfs-streamed.webm');await writeFile(streamedPath,Buffer.from(await manager.evaluate(async()=>[...new Uint8Array(await(await window.__qaOutput.getFile()).arrayBuffer())])));
-  results.push({test:'real-opfs-sequential-writer',...await analyze(streamedPath)});await discard(manager);await manager.locator('#record-output').selectOption('memory');
+  results.push({test:'real-opfs-sequential-writer',userResumeSurvivesClose:true,...await analyze(streamedPath)});await discard(manager);await manager.locator('#record-output').selectOption('memory');
 
   // Automatic source ending finalizes, and a source replacement never follows the new video.
   await select(manager,'赤い対象動画');await start(manager);await sleep(700);
