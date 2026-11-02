@@ -78,6 +78,7 @@ export class RecorderController {
       downloadId: this._result?.downloadId ?? null,
       resultPlaybackAvailable: Boolean(this._result?.blob || this._result?.readHandle),
       diskAvailable: typeof globalThis.showSaveFilePicker === 'function',
+      recorderAvailable: Boolean(supportedMime()),
       mime: value?.mime || 'video/webm',
       format: 'WebM',
       playbackBlocked: this._session?.audioContext?.state === 'suspended',
@@ -143,7 +144,7 @@ export class RecorderController {
     }
     const mime = supportedMime();
     if (!mime || !globalThis.navigator?.mediaDevices) {
-      return Promise.resolve(this._refuse('この環境ではWebMの録画を利用できません。'));
+      return Promise.resolve(this._refuse('この環境ではWebMの録画を利用できません。iOS/Androidの標準画面収録をご利用いただくか、「動画を保存」から直接保存をお試しください。'));
     }
     const op = { mode, audio: false, audioRequested: Boolean(audio), output, mime, cancelled: false, locked: false,
       outputHandle: output === 'file' ? this._pendingOutputHandle : null,
@@ -641,22 +642,44 @@ export class RecorderController {
     let downloadId;
     let terminal = false;
     try {
-      downloadId = await chrome.downloads.download({ url, filename: result.fileName, saveAs: true, conflictAction: 'uniquify' });
-      const status = await this._waitForDownload(downloadId);
-      terminal = true;
-      if (status.state !== 'complete') throw new Error(status.error || 'DOWNLOAD_INTERRUPTED');
-      result.saved = true;
-      result.downloadId = downloadId;
-      // The save dialog can rename the file. Keep only its basename in UI state.
-      let finalName = status.filename;
-      if (!finalName) {
-        try {
-          const [item] = await chrome.downloads.search({ id: downloadId });
-          finalName = item?.filename;
+      if (typeof chrome !== 'undefined' && chrome.downloads?.download) {
+        downloadId = await chrome.downloads.download({ url, filename: result.fileName, saveAs: true, conflictAction: 'uniquify' });
+        const status = await this._waitForDownload(downloadId);
+        terminal = true;
+        if (status.state !== 'complete') throw new Error(status.error || 'DOWNLOAD_INTERRUPTED');
+        result.saved = true;
+        result.downloadId = downloadId;
+        // The save dialog can rename the file. Keep only its basename in UI state.
+        let finalName = status.filename;
+        if (!finalName) {
+          try {
+            const [item] = await chrome.downloads.search({ id: downloadId });
+            finalName = item?.filename;
+          }
+          catch { /* Completion is already confirmed; filename lookup must not undo it. */ }
         }
-        catch { /* Completion is already confirmed; filename lookup must not undo it. */ }
+        if (finalName) result.fileName = String(finalName).split(/[\\/]/).at(-1) || result.fileName;
+      } else {
+        terminal = true;
+        if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+          const file = new File([result.blob], result.fileName, { type: result.blob.type || 'video/webm' });
+          if (typeof navigator.canShare !== 'function' || navigator.canShare({ files: [file] })) {
+            await navigator.share({ files: [file], title: result.fileName });
+            result.saved = true;
+            this._phase = 'saved';
+            this._message = '共有・保存完了。録画データはこの画面に保持しています。';
+            return true;
+          }
+        }
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = result.fileName;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        result.saved = true;
       }
-      if (finalName) result.fileName = String(finalName).split(/[\\/]/).at(-1) || result.fileName;
       this._phase = 'saved';
       this._message = 'ファイル保存完了。録画データはこの画面に保持しています。';
       return true;
