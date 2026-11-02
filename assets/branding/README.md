@@ -10,7 +10,24 @@
 - 色: 既存UIの `#147568` を起点に、深いティールと淡いミントを使用。
 - 生成方法: Codex内蔵 `image_gen`。出力原本を加工せず保存。
 - 確認: 生成画像の構図・文字なし・ガラスの表現を目視確認し、PNG形式と寸法を確認。
-- 状態: デザイン素材。拡張のmanifest・ツールバー・画面内ロゴへの組み込みは未実施。小サイズの実表示は未確認。
+- 状態: 2026-11-02の追加依頼で拡張アイコン・ツールバー・作業タブfavicon・画面内ロゴへ組み込み。通常利用中のChromeへの再読み込みと本人による見え方の確認は未実施。
+
+## アプリ用PNG
+
+原本を保持し、macOSの `sips` で必要な寸法へ縮小したPNGを `extension/icons/` に同梱する。実行時の生成・外部取得・追加依存はない。
+
+- `icon-16.png` / `icon-32.png` / `icon-48.png` / `icon-128.png`: manifestの拡張アイコン。
+- `icon-16.png` / `icon-24.png` / `icon-32.png`: ツールバー用。
+- `icon-32.png`: 作業タブのfavicon。
+- `icon-128.png`: ヘッダーロゴ。画面幅に応じ38 / 33 / 30 pxで表示する。
+
+再書き出しはリポジトリのルートで実行する。
+
+```sh
+for icon_size in 16 24 32 48 128; do
+  sips -z "$icon_size" "$icon_size" assets/branding/videoharbor-liquid-glass-v1.png --out "extension/icons/icon-$icon_size.png" || exit 1
+done
+```
 
 ## 生成プロンプト
 
