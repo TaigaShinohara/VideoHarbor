@@ -119,10 +119,22 @@ export async function controlPageVideo(request) {
       const listen = (target, type, listener) => { target.addEventListener(type, listener); value.listeners.push([target, type, listener]); };
       const stopTracks = stopOwnedTracks;
       const removeListeners = () => { for (const [target, type, listener] of value.listeners) target.removeEventListener(type, listener); value.listeners = []; };
+      const pauseStartedSource = () => {
+        // Only pause the source this recording actually started. Inspection-only
+        // preparation and a replacement video must keep their playback state.
+        if (!value.started || value.sourcePauseAttempted) return;
+        value.sourcePauseAttempted = true;
+        if (!video.isConnected || document.URL !== ref.documentURL
+          || video.currentSrc !== value.currentSrc || video.srcObject !== value.srcObject
+          || JSON.stringify(sourceAttributes()) !== before.attributes || video.paused || video.ended) return;
+        try { video.pause(); }
+        catch { value.reason = [value.reason, '元動画を一時停止できませんでした。元ページで停止してください。'].filter(Boolean).join(' '); }
+      };
       value.dispose = () => {
         if (value.closed) return;
         value.closed = true; clearInterval(value.timer); removeListeners();
         try { if (recorder.state !== 'inactive') recorder.stop(); } catch {}
+        pauseStartedSource();
         stopTracks(); value.queue = []; value.pending = null; value.queuedBytes = 0;
         if (globalThis[key] === value) delete globalThis[key];
       };
@@ -133,6 +145,7 @@ export async function controlPageVideo(request) {
         if (recorder.state !== 'inactive') {
           try { recorder.stop(); } catch { value.failure ||= '動画の録画を正常に終了できませんでした。'; value.stopped = true; stopTracks(); }
         }
+        pauseStartedSource();
       };
       const sourceChanged = () => video.currentSrc !== value.currentSrc || video.srcObject !== value.srcObject || !video.isConnected || Boolean(video.mediaKeys);
       value.check = () => {
@@ -150,7 +163,7 @@ export async function controlPageVideo(request) {
         }
         value.queue.push({blob: event.data, offset: 0}); value.queuedBytes += event.data.size;
       });
-      listen(recorder, 'stop', () => { value.stopped = true; stopTracks(); });
+      listen(recorder, 'stop', () => { value.stopped = true; pauseStartedSource(); stopTracks(); });
       listen(recorder, 'error', () => value.stop('', '動画の録画中にエラーが発生しました。'));
       listen(video, 'ended', () => value.stop('動画の再生が終了したため停止しました。'));
       listen(video, 'volumechange', value.check);
@@ -192,8 +205,12 @@ export async function controlPageVideo(request) {
     const value = session;
     if (value.video.paused) {
       const position = value.video.currentTime;
-      const positionChanged = () => value.video.seeking || (Number.isFinite(position) && Number.isFinite(value.video.currentTime)
-        && Math.abs(value.video.currentTime - position) > 0.05);
+      const rate = Number.isFinite(value.video.playbackRate) ? Math.max(0, value.video.playbackRate) : 1;
+      let playRequestedAt, sought = false;
+      const onSeek = () => { sought = true; };
+      const positionChanged = (anchor, forwardAllowance = 0.05) => sought || value.video.seeking
+        || (Number.isFinite(anchor) && Number.isFinite(value.video.currentTime)
+          && (value.video.currentTime < anchor - 0.05 || value.video.currentTime > anchor + forwardAllowance));
       const ownsPlayback = () => value.video.isConnected && value.video.currentSrc === value.currentSrc && value.video.srcObject === value.srcObject;
       const pauseOwnedPlayback = () => { if (ownsPlayback()) { try { value.video.pause(); } catch {} } };
       let timer, failed = false, onPlay;
@@ -210,20 +227,25 @@ export async function controlPageVideo(request) {
       };
       // Chrome's old element-capture listeners can recreate audio providers on
       // the next play after EOS, stealing audio from a stream prepared earlier.
-      // Recapture in the real play event, after those listeners, before the
-      // media clock advances. Preparation and all user decisions remain silent.
+      // Recapture in the real play event after those listeners. Chrome can
+      // rebase a resumed media clock by about 60 ms even with no seek. Keep the
+      // opening strict, allow a bounded correction at an already confirmed
+      // mid-video position, and keep capture preparation bounded to 50 ms.
       const recording = new Promise((resolve, reject) => {
         onPlay = () => {
           if (failed || !ownsPlayback()) { reject(new Error('動画の再生元が変わりました。選び直してください。')); return; }
-          if (positionChanged()) {
+          const elapsed = Math.max(0, performance.now() - playRequestedAt) / 1000;
+          const resumeAllowance = position > 0.05 ? 0.1 : 0.05;
+          if (positionChanged(position, elapsed * rate + resumeAllowance)) {
             reject(new Error('動画の再生位置が変わりました。開始位置を確認して、もう一度録画を開始してください。')); return;
           }
+          const playPosition = value.video.currentTime;
           controlPageVideo({command:'prepare',token:value.token,reference:value.reference,
             audio:value.audio,mimeType:value.recorder.mimeType}).then(prepared => {
             const next = globalThis[key];
             if (failed) { cleanup(); throw new Error('動画の録画開始を中止しました。'); }
             if (prepared.error) throw new Error(prepared.error);
-            if (positionChanged()) {
+            if (positionChanged(playPosition)) {
               cleanup(); throw new Error('動画の再生位置が変わりました。開始位置を確認して、もう一度録画を開始してください。');
             }
             if (!next || !prepared.available || next.audio !== value.audio
@@ -237,6 +259,8 @@ export async function controlPageVideo(request) {
             resolve();
           }, reject).catch(reject);
         };
+        value.video.addEventListener('seeking', onSeek);
+        value.video.addEventListener('seeked', onSeek);
         value.video.addEventListener('play', onPlay, {once:true});
       });
       // Release the inspection-only streams before play; the replacement owns
@@ -244,6 +268,7 @@ export async function controlPageVideo(request) {
       value.dispose();
       try {
         let playback;
+        playRequestedAt = performance.now();
         try { playback = Promise.resolve(value.video.play()); } catch (error) { playback = Promise.reject(error); }
         playback.then(() => { if (failed) pauseOwnedPlayback(); }, () => {});
         await Promise.race([Promise.all([recording, playback]),new Promise((_, reject) => {
@@ -256,7 +281,10 @@ export async function controlPageVideo(request) {
       } catch (error) {
         failed = true; pauseOwnedPlayback(); cleanup();
         return {error: startupErrors.has(error?.message) ? error.message : '元動画を自動再生できませんでした。サイトの再生許可や読み込み状態を確認して、もう一度お試しください。'};
-      } finally { clearTimeout(timer); value.video.removeEventListener('play', onPlay); }
+      } finally {
+        clearTimeout(timer); value.video.removeEventListener('play', onPlay);
+        value.video.removeEventListener('seeking', onSeek); value.video.removeEventListener('seeked', onSeek);
+      }
     } else {
       try { value.recorder.start(500); value.started = true; value.activeAt = performance.now(); }
       catch { value.stop('', '動画の録画を開始できませんでした。'); return {error: value.failure}; }

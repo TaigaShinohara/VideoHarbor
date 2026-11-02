@@ -373,3 +373,86 @@ test('paused srcObject playback rebuilds recording clones without stopping borro
   await h.command('stop');await new Promise(resolve=>queueMicrotask(resolve));
   assert.ok(original.every(track=>track.readyState==='live'));assert.ok(h.recorder.stream.getTracks().every(track=>track.readyState==='ended'));
 });
+
+test('stopping an active or paused recording pauses the exact source without rewinding and retains final data',async t=>{
+  for(const paused of [false,true]) await t.test(paused ? 'paused recorder' : 'active recorder',async sub=>{
+    const h=harness(sub);h.video.currentTime=3.25;
+    await h.command('prepare');await h.command('start');if(paused)await h.command('pause');
+    h.recorder.finalBlob=new Blob(['final']);
+    await h.command('stop');
+    assert.equal(h.video.paused,true);assert.equal(h.video.currentTime,3.25);assert.equal(h.video.pauseCalls,1);
+    const tail=await h.command('poll');assert.equal(Buffer.from(tail.chunk.base64,'base64').toString(),'final');
+    assert.equal((await h.command('poll',{ack:1})).done,true);await h.command('close');assert.equal(h.video.pauseCalls,1);
+  });
+});
+
+test('closing preparation does not pause a playing source but closing a started session does',async t=>{
+  const h=harness(t);await h.command('prepare');await h.command('stop');await h.command('close');
+  assert.equal(h.video.paused,false);assert.equal(h.video.pauseCalls,0);
+  await h.command('prepare');await h.command('start');await h.command('close');
+  assert.equal(h.video.paused,true);assert.equal(h.video.pauseCalls,1);
+});
+
+test('source replacement or document navigation never pauses another playback during cleanup',async t=>{
+  for(const changed of ['currentSrc','srcObject','attribute','document']) await t.test(changed,async sub=>{
+    const h=harness(sub);await h.command('prepare');await h.command('start');
+    if(changed==='currentSrc')h.video.currentSrc+='?replacement';
+    if(changed==='srcObject')h.video.srcObject=new Stream(true);
+    if(changed==='attribute')h.video.getAttribute=name=>name==='src'?'/replacement.webm':null;
+    if(changed==='document')document.URL+='next';
+    await h.command('stop');await h.command('close');assert.equal(h.video.pauseCalls,0,changed);
+  });
+});
+
+test('source pause failure does not prevent final bytes, capture cleanup or close',async t=>{
+  const h=harness(t);await h.command('prepare');await h.command('start');h.recorder.finalBlob=new Blob(['tail']);
+  let attempts=0;h.video.pause=()=>{attempts++;throw new Error('Synthetic pause rejection');};
+  await h.command('stop');const response=await h.command('poll');
+  assert.match(response.reason,/元動画を一時停止できませんでした/);
+  assert.equal(Buffer.from(response.chunk.base64,'base64').toString(),'tail');
+  await h.command('close');assert.ok(h.stream.getTracks().every(track=>track.readyState==='ended'));assert.equal(attempts,1);
+});
+
+test('queued play events allow normal resumed clock progress at the source playback rate',async t=>{
+  for(const rate of [1,2])await t.test(`rate ${rate}`,async sub=>{
+    const h=harness(sub);h.video.paused=true;h.video.currentTime=0.89;h.video.playbackRate=rate;
+    h.video.play=()=>new Promise(resolve=>setTimeout(()=>{
+      h.video.currentTime+=0.08*rate;h.video.paused=false;h.video.dispatchEvent(new Event('play'));resolve();
+    },80));
+    await h.command('prepare');assert.equal((await h.command('start')).state,'recording');
+    await h.command('stop');assert.equal(h.video.paused,true);
+  });
+});
+
+test('an explicit seek during queued playback is rejected even if the seeking flag is already clear',async t=>{
+  const h=harness(t);h.video.paused=true;
+  h.video.play=async()=>{
+    h.video.currentTime=0.02;h.video.dispatchEvent(new Event('seeking'));h.video.dispatchEvent(new Event('seeked'));
+    h.video.seeking=false;h.video.paused=false;h.video.dispatchEvent(new Event('play'));
+  };
+  await h.command('prepare');assert.match((await h.command('start')).error,/再生位置が変わりました/);
+  assert.equal(h.session,undefined);assert.equal(h.video.paused,true);
+});
+
+test('native resumed clock rebasing is bounded while opening and explicit seeks stay strict',async t=>{
+  for(const [position,advance,allowed] of [[0.89,0.063,true],[0.89,0.2,false],[0,0.063,false]])await t.test(`${position}+${advance}`,async sub=>{
+    const h=harness(sub);h.video.paused=true;h.video.currentTime=position;
+    h.video.addEventListener('play',()=>{h.video.currentTime+=advance;});
+    await h.command('prepare');const result=await h.command('start');
+    if(allowed) {assert.equal(result.state,'recording');await h.command('stop');}
+    else {assert.match(result.error,/再生位置が変わりました/);assert.equal(h.session,undefined);}
+    assert.equal(h.video.paused,true);
+  });
+});
+
+test('final cleanup respects user playback resumed after an already-paused or ended source was stopped',async t=>{
+  for(const ended of [false,true])await t.test(ended ? 'ended source' : 'already paused source',async sub=>{
+    const h=harness(sub);await h.command('prepare');await h.command('start');
+    h.video.paused=true;h.video.ended=ended;h.recorder.finalBlob=new Blob(['tail']);
+    await h.command('stop');const tail=await h.command('poll');
+    assert.equal(Buffer.from(tail.chunk.base64,'base64').toString(),'tail');await h.command('poll',{ack:1});
+    h.video.ended=false;await h.video.play();
+    const pauseCalls=h.video.pauseCalls;await h.command('close');
+    assert.equal(h.video.paused,false);assert.equal(h.video.pauseCalls,pauseCalls);
+  });
+});
