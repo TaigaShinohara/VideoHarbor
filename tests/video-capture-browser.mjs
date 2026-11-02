@@ -126,7 +126,7 @@ try {
   });
   await new Promise(resolve=>crossServer.listen(0,'127.0.0.1',resolve));crossOrigin=`http://127.0.0.1:${crossServer.address().port}`;
   server=createServer((req,res)=>{
-    if(req.url.endsWith('.webm'))return media(req,res);
+    if(new URL(req.url,'http://fixture.test').pathname.endsWith('.webm'))return media(req,res);
     if(req.url==='/frame'){res.setHeader('content-type','text/html; charset=utf-8');return res.end('<!doctype html><video title="同origin埋め込み" loop src="/target.webm"></video>');}
     res.setHeader('content-type','text/html; charset=utf-8');res.end(`<!doctype html><html lang="ja"><meta charset="utf-8"><title>Video-only synthetic fixture</title><body style="background:lime"><h1>PAGE TEXT MUST NEVER APPEAR</h1><div style="position:absolute;top:60px;left:5px;background:yellow;z-index:10">OVERLAY MUST NEVER APPEAR</div><video id="target" title="赤い対象動画" loop controls width="150" height="80" src="/target.webm"></video><video id="other" title="青い別動画" loop controls src="/other.webm"></video><video id="silent" title="音声なし動画" loop src="/silent.webm"></video><video id="allowed" title="CORS許可動画" loop crossorigin="anonymous" src="${crossOrigin}/allow.webm"></video><video id="denied" title="CORS不許可動画" loop src="${crossOrigin}/deny.webm"></video><video id="object" title="srcObject動画"></video><video id="mse" title="MSE動画"></video><iframe id="same-frame" title="同origin埋め込み" src="/frame"></iframe><iframe id="cross-frame" title="別origin埋め込み" src="${crossOrigin}/frame"></iframe></body></html>`);
   });
@@ -164,7 +164,8 @@ try {
   console.log('video-only QA: workspace and discovery ready');
   assert.equal(await manager.locator('.record-video-button').count(),8,'the shared top-page and same-origin frame URL has one video group');
   await assertPrivateDOM(manager,['/target.webm']);
-  assert.equal(await manager.locator('#record-video option').evaluateAll(options=>options.filter(option=>option.value).length),9,'every real VIDEO remains selectable, including URL-less streams and both frames');
+  assert.equal(await manager.locator('#record-video option').evaluateAll(options=>options.filter(option=>option.value).length),8,'recording choices use the same eight representatives as the video cards');
+  assert.equal(await manager.locator('#record-video option').evaluateAll(options=>options.filter(option=>option.textContent==='同origin埋め込み' || option.textContent==='同origin埋め込み · 再生中').length),0,'the same-URL frame does not add a duplicate recording choice');
   assert.equal(await candidateCount(manager,origin+'/target.webm','.direct-save'),1,'the shared top-page and same-origin frame URL has one save card');
 
   console.log('video-only QA: record target with background/pause/seek');
@@ -190,6 +191,14 @@ try {
   assert.match(await manager.locator('#record-message').textContent(),/取得|制限|保護/);assert.equal(await manager.locator('[name="record-mode"]:checked').inputValue(),'video','CORS failure never changes to whole-tab recording');
   await normalRecording(manager,'CORS許可動画','cors-allowed');
   await normalRecording(manager,'MSE動画','mse-playback',{audio:false});
+  const sameFrame=page.frames().find(frame=>frame.url()===origin+'/frame');
+  assert.ok(sameFrame,'the same-origin recording fixture is still present');
+  await sameFrame.evaluate(async()=>{const video=document.querySelector('video');video.src='/target.webm?frame=1';await video.play();});
+  await scan(manager);
+  assert.equal(await manager.locator('#record-video option').evaluateAll(options=>options.filter(option=>option.value).length),9,'a frame with a distinct complete URL becomes its own recording choice');
+  assert.equal(await manager.locator('#record-video option').evaluateAll(options=>options.filter(option=>option.textContent==='同origin埋め込み' || option.textContent==='同origin埋め込み · 再生中').length),1,'the query-distinct frame has one exact recording choice');
+  assert.equal(await candidateCount(manager,origin+'/target.webm?frame=1','.direct-save'),1,'the query-distinct frame retains its own save card');
+  await assertPrivateDOM(manager,['/target.webm','/target.webm?frame=1']);
   await normalRecording(manager,'同origin埋め込み','same-origin-frame',{fromSelector:true});
   await normalRecording(manager,'別origin埋め込み','cross-origin-frame');
   await normalRecording(manager,'srcObject動画','src-object');

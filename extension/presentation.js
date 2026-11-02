@@ -22,6 +22,10 @@ export const referenceKey=ref=>JSON.stringify([ref.documentId || ref.frameId || 
 export const videoReferenceId=ref=>videoReferences.id(referenceKey(ref));
 export const candidateLabel=url=>`保存元 ${resources.id(url).slice('source-'.length)}`;
 export const displayText=value=>String(value ?? '').replace(/(?:https?|blob|data):\S+/gi,'[URL]');
+export function videoGroupLabels(groups) {
+  let unnamed=0;
+  return groups.map(group=>({...group,label:displayText(group.title) || (group.linked ? `ページ上の動画 ${++unnamed}` : '内容を確認できていない候補')}));
+}
 export function sourceHost(url) {
   try { const parsed=new URL(url);return /^https?:$/.test(parsed.protocol) ? parsed.hostname : 'ページ内データ'; }
   catch { return '配信元未確認'; }

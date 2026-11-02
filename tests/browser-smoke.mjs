@@ -116,6 +116,22 @@ try {
     assert.equal(await blueGroup.count(),1,'a real video occurrence has one identifiable card');
     assert.equal(await blueGroup.locator('.video-card').count(),2,'the unique alternate source stays grouped without duplicating shared resources');
     assert.equal(await manager.getByRole('heading',{name:'赤いカップ',exact:true}).count(),1,'same-name CDN files remain different page videos');
+    const recordingOptions=()=>manager.locator('#record-video option').evaluateAll(options=>options
+      .filter(option=>option.value).map(option=>({value:option.value,label:option.textContent})));
+    const initialOptions=await recordingOptions();
+    assert.equal(initialOptions.length,2,'the recording selector has one choice per representative video instead of every hidden clone');
+    assert.deepEqual(new Set(initialOptions.map(option=>option.label.replace(/ · 再生中$/,''))),new Set(['青いカップ','赤いカップ']));
+    assert.ok(initialOptions.every(option=>/^video-\d+$/.test(option.value)),'recording choices retain opaque IDs');
+    await blueGroup.locator('.record-video-button').click();
+    const selectedBlue=await manager.locator('#record-video').inputValue();
+    assert.equal(selectedBlue,initialOptions.find(option=>option.label==='青いカップ' || option.label==='青いカップ · 再生中').value,
+      'the card selects exactly the representative offered by the recording selector');
+    await manager.locator('#download-tab').click();
+    await manager.locator('#scan').click();await manager.waitForFunction(()=>!document.querySelector('#scan').disabled);
+    assert.equal(await manager.locator('#record-video').inputValue(),selectedBlue,'rescan preserves selection for the same current element');
+    assert.deepEqual(await recordingOptions(),initialOptions,'unchanged representatives keep their opaque IDs on rescan');
+    await assertPrivateDOM(manager,['/clip.webm','/variant.webm','/stream.m3u8','alternate=1']);
+
     await page.locator('#blue').evaluate(el=>{el.style.outline='2px dotted rgb(77, 88, 99)';});
     await blueGroup.locator('.locate-source').click();
     await page.waitForFunction(()=>document.querySelector('#blue').style.outline.includes('18, 103, 214'));
@@ -141,6 +157,21 @@ try {
     const replacementGroup=manager.locator('.video-group').filter({has:manager.getByRole('heading',{name:'再表示した青いカップ',exact:true})});
     assert.equal(await replacementGroup.count(),1,'the newly visible player supplies the current title');
     assert.equal(await replacementGroup.locator('.video-card').count(),2,'the replacement player retains its distinct alternate source');
+    const replacementOptions=await recordingOptions();
+    assert.equal(replacementOptions.length,1,'removed or hidden duplicate videos do not remain as recording choices');
+    assert.equal(replacementOptions[0].label.replace(/ · 再生中$/,''),'再表示した青いカップ');
+    assert.equal(await manager.locator('#record-video').inputValue(),'','a new representative requires an explicit new recording selection');
+    assert.notEqual(replacementOptions[0].value,selectedBlue,'the new current element does not reuse the removed element ID');
+    await replacementGroup.locator('.record-video-button').click();
+    assert.equal(await manager.locator('#record-video').inputValue(),replacementOptions[0].value);
+    await manager.locator('#locate-record-video').click();
+    await page.waitForFunction(()=>document.querySelector('#blue-duplicate').style.outline.includes('18, 103, 214'));
+    await manager.bringToFront();
+    await assertPrivateDOM(manager,['/clip.webm','/variant.webm','/stream.m3u8','alternate=1']);
+    // Let the temporary highlight expire before the existing source-location assertion.
+    await page.waitForFunction(()=>!document.querySelector('#blue-duplicate').style.outline.includes('18, 103, 214'));
+    await manager.bringToFront();await manager.locator('#download-tab').click();
+
     await replacementGroup.locator('.locate-source').click();
     await page.waitForFunction(()=>document.querySelector('#blue-duplicate').style.outline.includes('18, 103, 214'));
     await manager.bringToFront();

@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {PresentationIds,resources,candidateLabel,sourceHost,displayText,videoReferenceId,videoReferences,referenceKey} from '../extension/presentation.js';
+import {PresentationIds,resources,candidateLabel,sourceHost,displayText,videoReferenceId,videoReferences,referenceKey,videoGroupLabels} from '../extension/presentation.js';
 import {renderVideoGroups} from '../extension/workspace-videos.js';
 import {outputOptions} from '../extension/output-format.js';
+import {groupVideos} from '../extension/video-view.js';
 
 test('presentation IDs preserve complete query-sensitive identity only in memory',()=>{
   const ids=new PresentationIds('source');
@@ -73,4 +74,53 @@ test('rendered candidates keep sensitive URLs out of text and DOM while actions 
   assert.deepEqual(selected,[ref]);
   assert.notEqual(resources.id(urls[0]),resources.id(urls[1]));
   assert.match(candidateLabel(urls[0]),/^保存元 \d+$/);
+});
+
+
+test('shared video labels number only untitled linked groups, redact URLs and preserve source identities',()=>{
+  const groups=[
+    {title:'Named https://media.test/OPAQUE_LABEL?token=PRIVATE_LABEL',linked:true,source:{videoRef:'named'},items:[]},
+    {title:'',linked:false,source:{},items:[]},
+    {title:'',linked:true,recordable:false,source:{configRef:'config'},items:[]},
+    {title:'',linked:true,recordable:true,source:{videoRef:'first'},items:[]},
+    {title:'タイトル付き',linked:true,source:{videoRef:'other'},items:[]},
+    {title:'',linked:true,recordable:true,source:{videoRef:'second'},items:[]},
+  ];
+  const before=structuredClone(groups);
+  const labelled=videoGroupLabels(groups);
+  assert.deepEqual(labelled.map(group=>group.label),['Named [URL]','内容を確認できていない候補','ページ上の動画 1','ページ上の動画 2','タイトル付き','ページ上の動画 3']);
+  assert.deepEqual(labelled.filter(group=>group.recordable).map(group=>group.label),['ページ上の動画 2','ページ上の動画 3'],
+    'recording choices use numbering from the same complete group list as the cards');
+  for(let index=0;index<groups.length;index++) {
+    assert.notEqual(labelled[index],groups[index]);
+    assert.equal(labelled[index].source,groups[index].source);
+    assert.equal(labelled[index].items,groups[index].items);
+  }
+  assert.deepEqual(groups,before);
+});
+
+test('rendered recording actions use the same untitled numbers and redacted labels as the recording choices',t=>{
+  const identity={elementTag:'VIDEO',frameToken:'frame',documentId:'doc',documentURL:'https://page.test/OPAQUE_LABEL?token=PRIVATE_LABEL'};
+  const refs=[
+    {...identity,elementToken:'first',videoRef:'first'},
+    {...identity,elementToken:'named',videoRef:'named',title:'動画 https://media.test/OPAQUE_LABEL?token=PRIVATE_LABEL'},
+    {...identity,elementToken:'second',videoRef:'second'},
+  ];
+  const state={items:[{url:'https://media.test/OPAQUE_LABEL.mp4?token=PRIVATE_LABEL',type:'direct',occurrences:[{configRef:'config',frameToken:'frame'}]}],videoElements:refs,frames:[],previousItems:[]};
+  const roots=new Map();const get=id=>{if(!roots.has(id))roots.set(id,new Node('root'));return roots.get(id);};
+  const previous=globalThis.document;
+  globalThis.document={getElementById:get,createTextNode:text=>new Node('text','',text)};
+  t.after(()=>{globalThis.document=previous;});
+  const selected=[];
+  renderVideoGroups({state,element:(...args)=>new Node(...args),icon:()=>new Node('svg'),statusElement:()=>new Node('span'),
+    onSave:()=>{},onRecord:source=>selected.push(source),onLocate:()=>{},onLocateFrame:()=>{},onFramePermission:()=>{}});
+  const labelled=videoGroupLabels(groupVideos(state.items,state.videoElements));
+  const nodes=[...roots.values()].flatMap(descendants);
+  assert.deepEqual(nodes.filter(node=>node.className==='video-title').map(node=>node.text),labelled.map(group=>group.label));
+  const buttons=nodes.filter(node=>node.className.includes('record-video-button'));
+  assert.deepEqual(buttons.map(node=>node.attributes['aria-label']),labelled.filter(group=>group.recordable).map(group=>`${group.label}だけを録画`));
+  for(const button of buttons)button.listeners.click();
+  assert.deepEqual(selected,labelled.filter(group=>group.recordable).map(group=>group.source));
+  const output=JSON.stringify(nodes.map(({text,dataset,attributes})=>({text,dataset,attributes})));
+  assert.equal(/OPAQUE_LABEL|PRIVATE_LABEL/.test(output),false);
 });

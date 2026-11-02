@@ -1,5 +1,13 @@
 # QA — v0.1
 
+## 録画対象selectの重複を解消 — 2026-11-02
+
+- `npm test`: 336件PASS、失敗・SKIPなし。表示ラベルの回帰2件を追加し、カードとselectの無題番号・URL伏字・元参照の保持を検証。`npm run check` / `git diff --check`: PASS。
+- `npm run test:browser`: 隔離Chrome・localhost合成ページでPASS。表示中video・非表示clone・JSON設定から録画選択肢が代表2件になること、同じ要素の再scanで不透明IDと選択を保持すること、代表が変わると未選択になりカードから新代表を選択・位置確認できること、URLがDOMへ出ないことを確認。
+- `npm run test:video`: PASS。初期は保存カードと同じ8代表だけがselectに表示され、同URLの同origin埋め込みは重複しない。iframeだけquery違いへ変更・再生・再scanすると9代表となり、そのiframeを明示選択して録画できることを確認。既存の映像・音声・CORS/MSE/srcObject・OPFS等の検証も通過し、保存成果物をffprobe/ffmpegで検証した。
+- 独立レビューで修正必須の指摘なし。内部videoElementsと録画のexact identity照合は保持し、録画中は選択肢・選択参照を更新しない。追加通信・権限・依存なし。
+- 未確認: 利用者の元ページでの修正後追試、実OS picker・実音声の聴取・人間の操作体験。Chrome116専用の再試験は今回未実施。前回の保存カード重複は今回本人から解消報告があったが、録画selectの確認とは分ける。
+
 ## 情報表示・保存名・保持範囲の改善 — 2026-11-01 / v0.6.1
 
 - 工程ごとに文書/連絡先（PR #22）、中立保存名（#23）、URL表示/不透明DOM ID（#24）、閉鎖session最小化（#25）を統合。最終工程でローカル監査コマンド、検証記録、バージョンをそろえた。結果・範囲・残る情報は [PRIVACY-IMPLEMENTATION-2026-11-01.md](PRIVACY-IMPLEMENTATION-2026-11-01.md)。

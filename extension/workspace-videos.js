@@ -2,20 +2,20 @@ import {extensionOf} from './utils.js';
 import {originPattern} from './media-save.js';
 import {groupVideos,formatDuration} from './video-view.js';
 import {originalExtension} from './output-format.js';
-import {resources,candidateLabel,sourceHost,displayText} from './presentation.js';
+import {resources,candidateLabel,sourceHost,displayText,videoGroupLabels} from './presentation.js';
 
 export function renderVideoGroups({state,element,icon,statusElement,onSave,onRecord,onLocate,onFramePermission,onLocateFrame,formatOptions,formatValue,onFormatChange}) {
   const $=id=>document.getElementById(id), supported=item=>['direct','hls','dash','blob'].includes(item.type);
-  const groups=groupVideos(state.items,state.videoElements || []), known=groups.filter(group=>group.linked).length;
+  const groups=videoGroupLabels(groupVideos(state.items,state.videoElements || [])), known=groups.filter(group=>group.linked).length;
   const direct=state.items.filter(supported);
   const unsupported=groups.filter(group=>!group.recordable && !group.items.some(supported));
   $('count').textContent=`${known ? `${known}本の動画 · ` : ''}${direct.length}件の保存候補`;
   $('direct-list').replaceChildren();$('unsupported-list').replaceChildren();
-  let videoNumber=0,formatIndex=0;
+  let formatIndex=0;
   for(const group of groups) {
     const section=element('section','video-group');
     const heading=element('div','video-group-heading'), description=element('div','video-identity');
-    const name=displayText(group.title) || (group.linked ? `ページ上の動画 ${++videoNumber}` : '内容を確認できていない候補');
+    const name=group.label;
     description.append(element('h3','video-title',name));
     const facts=[];
     if(group.playing)facts.push('再生中');

@@ -5,7 +5,8 @@ import { outputOptions, validateOutputFormat } from './output-format.js';
 import { renderVideoGroups } from './workspace-videos.js';
 import { RecordingResultView } from './workspace-result.js';
 import { prepareVideoCapture } from './video-capture.js';
-import {resources,candidateLabel,videoReferences,referenceKey,videoReferenceId,displayText} from './presentation.js';
+import { groupVideos } from './video-view.js';
+import {resources,candidateLabel,videoReferences,referenceKey,videoReferenceId,displayText,videoGroupLabels} from './presentation.js';
 const KIND = 'videos';
 const $ = id => document.getElementById(id);
 const sessionId = new URL(location.href).searchParams.get('id');
@@ -16,13 +17,17 @@ let recordingResultView = null;
 let initialRecorderMessage = '', previousRecordingPhase = '';
 const handledCompletions = new Set();
 const formatSelections=new Map();
+let recordingChoices=[];
 const videoKey = videoReferenceId;
 const elementURL = node => resources.key(node.dataset.candidateId);
-const selectedVideo = () => (state?.videoElements || []).find(ref => videoKey(ref) === $('record-video').value);
+const selectedVideo = () => recordingChoices.find(group => videoKey(group.source) === $('record-video').value)?.source;
 function updateVideoChoices() {
+  // An active recording owns its exact reference; a redraw must not replace it.
+  if(recorder?.busy)return;
   const select=$('record-video'), current=select.value;
   videoReferences.retain((state.videoElements || []).map(referenceKey));
-  const refs=state.videoElements || [], options=[['','動画を選んでください'],...refs.map((ref,index)=>[videoKey(ref),`${displayText(ref.title) || `ページ上の動画 ${index+1}`}${ref.playing ? ' · 再生中' : ''}`])];
+  recordingChoices=videoGroupLabels(groupVideos(state.items,state.videoElements || [])).filter(group=>group.recordable);
+  const refs=recordingChoices.map(group=>group.source), options=[['','動画を選んでください'],...recordingChoices.map(group=>[videoKey(group.source),`${group.label}${group.source.playing ? ' · 再生中' : ''}`])];
   if(JSON.stringify([...select.options].map(option=>[option.value,option.textContent]))!==JSON.stringify(options)) {
     select.replaceChildren(...options.map(([value,text])=>{const option=element('option','',text);option.value=value;return option;}));
     select.value=refs.some(ref=>videoKey(ref)===current) ? current : '';
@@ -34,7 +39,7 @@ function selectVideoForRecording(reference) {
   updateVideoChoices();
   if(reference) {
     const key=videoKey(reference);
-    if(!(state.videoElements || []).some(ref=>videoKey(ref)===key)) {error(new Error('動画が見つかりません。元ページを確認して再スキャンしてください。'));return;}
+    if(!recordingChoices.some(group=>videoKey(group.source)===key)) {error(new Error('動画が見つかりません。元ページを確認して再スキャンしてください。'));return;}
     $('record-video').value=key;
     document.querySelector('[name="record-mode"][value="video"]').checked=true;
   }
