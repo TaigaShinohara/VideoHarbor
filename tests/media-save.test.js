@@ -19,12 +19,14 @@ function harness(t,options={}) {
       async contains({origins}) {calls.push(['contains',...origins]);return origins.every(origin => granted.has(origin));},
       request({origins}) {calls.push(['request',...origins]);return Promise.resolve(h.requestResult).then(result => {if (result) origins.forEach(origin => granted.add(origin));return result;});},
     },
-    downloads:{
-      async download(config) {calls.push(['download',config]);downloads.set(42,{id:42,state:h.state});if(h.acceptDownload)await h.acceptDownload.promise;return 42;},
-      async search({id}) {calls.push(['search',id]);return downloads.has(id) ? [{...downloads.get(id)}] : [];},
-      async cancel(id) {calls.push(['cancel',id]);const item=downloads.get(id);if(item?.state==='complete')throw new Error('already complete');if(item)item.state='interrupted';h.emit(id,'interrupted');},
-      onChanged:{addListener:fn=>listeners.add(fn),removeListener:fn=>listeners.delete(fn)},
-    },
+    ...(options.withoutDownloads ? {} : {
+      downloads:{
+        async download(config) {calls.push(['download',config]);downloads.set(42,{id:42,state:h.state});if(h.acceptDownload)await h.acceptDownload.promise;return 42;},
+        async search({id}) {calls.push(['search',id]);return downloads.has(id) ? [{...downloads.get(id)}] : [];},
+        async cancel(id) {calls.push(['cancel',id]);const item=downloads.get(id);if(item?.state==='complete')throw new Error('already complete');if(item)item.state='interrupted';h.emit(id,'interrupted');},
+        onChanged:{addListener:fn=>listeners.add(fn),removeListener:fn=>listeners.delete(fn)},
+      },
+    }),
   };
   h.emit = (id,state) => { if(downloads.has(id))downloads.get(id).state=state;for(const fn of [...listeners])fn({id,state:{current:state}}); };
   Object.defineProperty(globalThis,'chrome',{configurable:true,value:chrome});
@@ -518,4 +520,62 @@ test('workspace disposal terminates pending processing and prevents later starts
   const calls=h.calls.length;await h.saver.start(blobItem,'Another title');
   assert.equal(h.calls.length,calls);assert.equal(h.processors.length,1);
   assert.equal(h.calls.some(call=>call[0]==='objectURL'||call[0]==='download'),false);
+});
+
+test('mobile context without chrome.downloads uses navigator.share when available',async t=>{
+  const shared=[];
+  const originalShare=navigator.share, originalCanShare=navigator.canShare;
+  Object.defineProperty(navigator,'share',{configurable:true,value:async data=>{shared.push(data);return true;}});
+  Object.defineProperty(navigator,'canShare',{configurable:true,value:()=>true});
+  t.after(()=>{
+    if(originalShare)Object.defineProperty(navigator,'share',{configurable:true,value:originalShare});
+    else delete navigator.share;
+    if(originalCanShare)Object.defineProperty(navigator,'canShare',{configurable:true,value:originalCanShare});
+    else delete navigator.canShare;
+  });
+  const h=harness(t,{withoutDownloads:true});
+  await h.saver.start(blobItem,'Mobile Title');
+  const result=h.saver.status(blobItem.url);
+  assert.equal(result.status,'complete');
+  assert.equal(shared.length,1);
+  assert.ok(shared[0].files?.[0] instanceof File);
+  assert.match(result.message,/共有・保存完了/);
+});
+
+test('mobile context transitions to ready when user gesture expires and shares on next tap',async t=>{
+  const shared=[];
+  let attempts=0;
+  const originalShare=navigator.share, originalCanShare=navigator.canShare;
+  Object.defineProperty(navigator,'share',{configurable:true,value:async data=>{
+    attempts++;
+    if(attempts===1) {
+      const err=new Error('User activation expired');
+      err.name='NotAllowedError';
+      throw err;
+    }
+    shared.push(data);
+    return true;
+  }});
+  Object.defineProperty(navigator,'canShare',{configurable:true,value:()=>true});
+  t.after(()=>{
+    if(originalShare)Object.defineProperty(navigator,'share',{configurable:true,value:originalShare});
+    else delete navigator.share;
+    if(originalCanShare)Object.defineProperty(navigator,'canShare',{configurable:true,value:originalCanShare});
+    else delete navigator.canShare;
+  });
+  const h=harness(t,{withoutDownloads:true});
+  await h.saver.start(blobItem,'Mobile Title');
+  const readyResult=h.saver.status(blobItem.url);
+  assert.equal(readyResult.status,'ready');
+  assert.ok(readyResult.blob);
+  assert.match(readyResult.message,/動画の準備完了/);
+  assert.equal(shared.length,0);
+
+  // User taps "端末に保存" with fresh user gesture
+  await h.saver.start(blobItem,'Mobile Title');
+  const completeResult=h.saver.status(blobItem.url);
+  assert.equal(completeResult.status,'complete');
+  assert.equal(shared.length,1);
+  assert.equal(completeResult.blob,undefined);
+  assert.match(completeResult.message,/共有・保存完了/);
 });

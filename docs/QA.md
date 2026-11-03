@@ -1,5 +1,28 @@
 # QA — v0.1
 
+## モバイル（iOS Safari / スマートフォン）対応とSafari Web Extension変換 — 2026-11-03
+
+- `npm test`: 389件PASS、失敗・SKIPなし（Web Share APIフォールバック、User Activation失効時のready状態復帰および再タップ時共有テスト含む）。`npm run check`: PASS。`npm run test:browser`: 隔離ChromeでPASS。
+- **モバイルWeb APIフォールバックとSafari互換性**:
+  - `chrome.downloads` が利用できない環境において、Web Share API (`navigator.share({files})`) による共有・保存フローを実装。
+  - 長時間のストリームダウンロードによる User Activation 失効時、危険な `<a download>`（Safari WebKitBlobResource error 1 を引き起こす）を回避し、`ready` 状態で「端末に保存（写真/ファイル）」ボタンを表示。ユーザーの直接タップによる新鮮なジェスチャーで確実に共有シートを開く仕様を確立。
+  - `chrome.downloads?.onChanged` オプショナルチェーンおよび `chrome.storage.session || chrome.storage.local` フォールバックにより、Safari Web Extension の初期化クラッシュを完全に解消。
+  - ストリーム取得・MP4結合中の画面スリープ防止として Screen Wake Lock API (`navigator.wakeLock`) を統合。処理完了・中断時に確実に解放されることを確認。
+  - 録画API（`captureStream`, `MediaRecorder`）が非対応・制限されている環境（iOS Safari等）での安全な無効化と、OS標準画面収録への親切な案内表示を確認。
+- **UI・レスポンシブ・セーフエリア**:
+  - `workspace.html` の viewport に `viewport-fit=cover` を適用。
+  - `workspace.css` で `.shell`, `.footer`, 固定進捗パネルに `env(safe-area-inset-*)` を適用し、ノッチ・Dynamic Island・ホームインジケータとの干渉を防止。
+  - モバイル幅（600px以下）で全主要ボタン・セレクト要素のタップ有効高さを最低44px〜48px確保。「再スキャン」ボタンの横折り返し崩れを防止。
+- **Safari Web Extension シミュレータ実証**:
+  - `xcrun safari-web-extension-converter extension/` により Xcode プロジェクトを生成。
+  - `xcodebuild -scheme "VideoHarbor (iOS)" -sdk iphonesimulator` によるビルド成功（`** BUILD SUCCEEDED **`）。
+  - **実シミュレータ動作実証（iPhone 16 / iOS Safari）**:
+    - Safari アドレスバーの機能拡張メニューから VideoHarbor がフォアグラウンドタブとして起動。
+    - ページ内動画（HLS）の全区間取得（145.3 MB）およびローカル MP4 結合に成功。
+    - iOS 標準の共有シート（Share Sheet）が正常に立ち上がり、「ビデオを保存（カメラロール）」「“ファイル”に保存」のアクションが表示されることを確認・実証済み。
+- **未確認の境界**:
+  - Apple Developer 実署名（Personal Team または有料アカウント）による物理 iPhone 実機での最終保存、実機物理スピーカーでの聴取、VoiceOver による実機スクリーンリーダー体験。
+
 ## Liquid Glassアプリアイコンの組み込み — 2026-11-02
 
 - 原本を保持して16 / 24 / 32 / 48 / 128 pxのPNGを同梱。`npm run check` にPNG形式・寸法とローカルUI参照の存在確認を追加しPASS。`git diff --check` もPASS。`npm test`: 387件PASS、失敗・SKIPなし。

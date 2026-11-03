@@ -58,12 +58,15 @@ export class MediaSaver {
     return this.run(item,title,permission,previous,outputFormat,operation);
   }
   async run(item,title,permission,previous,outputFormat,operation) {
-    let objectURL,blobToken;
+    let objectURL,blobToken,wakeLock=null;
     const sameFormat=previous?.outputFormat===outputFormat;
     const result={status:'preparing',message:'動画の配信情報を確認しています。',bytesReceived:0,outputFormat,audioUnverified:sameFormat && Boolean(previous?.audioUnverified),
       downloadName:sameFormat && previous?.status!=='complete' ? previous?.downloadName : undefined};
     this.results.set(item.url,result);this.emit();
     try {
+      if(typeof navigator!=='undefined' && 'wakeLock' in navigator && typeof navigator.wakeLock.request==='function') {
+        wakeLock=await navigator.wakeLock.request('screen').catch(()=>null);
+      }
       if(!await permission)throw new Error('配信元へのアクセスは許可されませんでした。もう一度「保存」から試せます。');
       const signal=operation.controller.signal;
       const processor=()=>operation.processor ||= this.processorFactory({signal});
@@ -105,28 +108,82 @@ export class MediaSaver {
       const downloadName=previous?.extension===extension ? result.downloadName : undefined;
       Object.assign(result,{blob,extension,downloadName:downloadName || outputName(extension),status:'saving',message:'ファイルへ保存しています。',bytesReceived:blob.size});this.emit();
       signal.throwIfAborted();
-      objectURL=URL.createObjectURL(blob);
-      operation.downloadId=await chrome.downloads.download({url:objectURL,filename:result.downloadName,conflictAction:'uniquify',saveAs:false});
-      if(this.operation===operation)this.downloadId=operation.downloadId;
-      result.downloadId=operation.downloadId;
-      // The user may cancel while Chrome is accepting the download.
-      if(signal.aborted)await chrome.downloads.cancel(operation.downloadId).catch(()=>{});
-      await this.waitForDownload(operation.downloadId);
-      try {
-        const [saved]=await chrome.downloads.search({id:operation.downloadId});
-        if(saved?.filename)result.filename=saved.filename;
-        if(typeof saved?.exists==='boolean')result.exists=saved.exists;
-      } catch { /* The confirmed completion remains valid if its optional location is unavailable. */ }
-      result.status='complete';result.message=`保存完了 · ${extension.toUpperCase()}${result.audioUnverified ? ' · 音声の有無は未確認' : ''}`;delete result.blob;
+      if(typeof chrome!=='undefined' && chrome.downloads?.download) {
+        objectURL=URL.createObjectURL(blob);
+        operation.downloadId=await chrome.downloads.download({url:objectURL,filename:result.downloadName,conflictAction:'uniquify',saveAs:false});
+        if(this.operation===operation)this.downloadId=operation.downloadId;
+        result.downloadId=operation.downloadId;
+        // The user may cancel while Chrome is accepting the download.
+        if(signal.aborted)await chrome.downloads.cancel(operation.downloadId).catch(()=>{});
+        await this.waitForDownload(operation.downloadId);
+        try {
+          const [saved]=await chrome.downloads.search({id:operation.downloadId});
+          if(saved?.filename)result.filename=saved.filename;
+          if(typeof saved?.exists==='boolean')result.exists=saved.exists;
+        } catch { /* The confirmed completion remains valid if its optional location is unavailable. */ }
+        result.status='complete';result.message=`保存完了 · ${extension.toUpperCase()}${result.audioUnverified ? ' · 音声の有無は未確認' : ''}`;delete result.blob;
+      } else {
+        await this.saveMobile(blob,result,extension,signal);
+      }
     } catch(error) {
       result.status=error.origins ? 'permission' : 'interrupted';
       result.origins=error.origins;
       result.message=operation.controller.signal.aborted ? '保存を停止しました。' : publicError(error);
     } finally {
+      if(wakeLock)await wakeLock.release().catch(()=>{});
       operation.controller.abort();operation.processor?.close();
       if(blobToken)await this.readBlob(item.url,-2,blobToken).catch(()=>{});
       if(objectURL)URL.revokeObjectURL(objectURL);
       if(this.operation===operation){this.operation=null;this.busy=false;this.current=null;this.downloadId=null;this.controller=null;this.emit();}
+    }
+  }
+  async saveMobile(blob,result,extension,signal) {
+    signal.throwIfAborted();
+    if(typeof navigator!=='undefined' && typeof navigator.share==='function') {
+      const mime=blob.type || (extension==='mp4' ? 'video/mp4' : 'video/webm');
+      const file=new File([blob],result.downloadName,{type:mime});
+      if(typeof navigator.canShare!=='function' || navigator.canShare({files:[file]})) {
+        try {
+          await navigator.share({files:[file],title:result.downloadName});
+          result.status='complete';
+          result.message=`共有・保存完了 · ${extension.toUpperCase()}${result.audioUnverified ? ' · 音声の有無は未確認' : ''}`;
+          delete result.blob;
+          return;
+        } catch(err) {
+          if(signal.aborted)throw err;
+          // In mobile WebKit/Safari, navigator.share requires transient user activation (direct tap).
+          // Long async downloads expire activation (NotAllowedError); users may also dismiss (AbortError).
+          // Retain the blob in a 'ready' state so the next tap on "端末に保存" shares with fresh gesture.
+          // Never fall back to <a download> click on mobile because WebKit navigation to blob: fails
+          // with "WebKitBlobResource error 1".
+          if(err?.name==='NotAllowedError' || err?.name==='AbortError') {
+            result.status='ready';
+            result.blob=blob;
+            result.message=`動画の準備完了 · ${extension.toUpperCase()}${result.audioUnverified ? ' · 音声の有無は未確認' : ''} · 「端末に保存」を押してください`;
+            return;
+          }
+        }
+      }
+    }
+    signal.throwIfAborted();
+    const objectURL=URL.createObjectURL(blob);
+    try {
+      const a=document.createElement('a');
+      a.href=objectURL;
+      a.download=result.downloadName;
+      a.style.display='none';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      result.status='complete';
+      result.message=`保存完了 · ${extension.toUpperCase()}${result.audioUnverified ? ' · 音声の有無は未確認' : ''}`;
+      delete result.blob;
+    } catch {
+      result.status='ready';
+      result.blob=blob;
+      result.message=`動画の準備完了 · ${extension.toUpperCase()} · 「端末に保存」を押してください`;
+    } finally {
+      setTimeout(()=>URL.revokeObjectURL(objectURL),60000);
     }
   }
   waitForDownload(id) {

@@ -18,8 +18,15 @@ export function renderVideoGroups({state,element,icon,statusElement,onSave,onRec
     const name=group.label;
     description.append(element('h3','video-title',name));
     const facts=[];
-    if(group.playing)facts.push('再生中');
-    if(group.duration)facts.push(formatDuration(group.duration));
+    if(group.playing) {
+      const playingBadge=element('span','badge playing-badge');
+      playingBadge.append(icon('play'),document.createTextNode('再生中'));
+      description.append(playingBadge);
+    }
+    if(group.duration) {
+      const durationBadge=element('span','badge duration-badge',formatDuration(group.duration));
+      description.append(durationBadge);
+    }
     if(group.items.length>1)facts.push(`${group.items.length}種類の保存元`);
     if(!group.linked)facts.push(group.history ? '読み込み記録 · 現在の動画との対応は未確認' : 'ページ上の動画との対応は未確認');
     if(facts.length)description.append(element('p','meta',facts.join(' · ')));
@@ -28,18 +35,23 @@ export function renderVideoGroups({state,element,icon,statusElement,onSave,onRec
       heading.append(image);
     }
     heading.append(description);
+    const actionsWrap=element('div','group-actions');
     const sourceTag=group.source.elementTag;
     const locatable=group.source.locatable===true && sourceTag && !['SCRIPT','META','LINK','SOURCE'].includes(sourceTag);
     if(locatable && group.source.elementToken && group.source.frameToken) {
-      const locate=element('button','secondary locate-source',group.source.videoRef ? '元ページで確認' : sourceTag==='A' ? '元リンクを確認' : '出典の場所を確認');
+      const locateText=group.source.videoRef ? '元ページで確認' : sourceTag==='A' ? '元リンクを確認' : '出典の場所を確認';
+      const locate=element('button','secondary small locate-source');
+      locate.append(icon('external'),document.createTextNode(locateText));
       locate.setAttribute('aria-label',`${name}の元ページの出典を確認`);
-      locate.addEventListener('click',()=>onLocate(group.items[0] || null,group.source));heading.append(locate);
+      locate.addEventListener('click',()=>onLocate(group.items[0] || null,group.source));actionsWrap.append(locate);
     }
     if(group.recordable) {
-      const record=element('button','secondary record-video-button','この動画を録画');
+      const record=element('button','secondary small record-video-button');
+      record.append(icon('record'),document.createTextNode('この動画を録画'));
       record.setAttribute('aria-label',`${name}だけを録画`);
-      record.addEventListener('click',()=>onRecord(group.source));heading.append(record);
+      record.addEventListener('click',()=>onRecord(group.source));actionsWrap.append(record);
     }
+    if(actionsWrap.children.length) heading.append(actionsWrap);
     section.append(heading);
     if(!group.items.length) section.append(element('p','hint','直接保存できる保存元は見つかりません。動画だけの録画を試せます。'));
     let alternatives;

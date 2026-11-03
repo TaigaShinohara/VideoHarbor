@@ -6,6 +6,21 @@ import { originalExtension, validateOutputFormat } from './output-format.js';
 import { allowedURL, downloadName, summarizeJobs, publicError } from './utils.js';
 const KIND = 'videos';
 const PREFIX = 'workspace:';
+const sessionStore = (typeof chrome !== 'undefined' && chrome.storage?.session)
+  ? chrome.storage.session
+  : ((typeof chrome !== 'undefined' && chrome.storage?.local) || {
+      _data: new Map(),
+      async get(key) {
+        if (!key) return Object.fromEntries(this._data);
+        if (typeof key === 'string') return {[key]: this._data.get(key)};
+        const res = {};
+        const keys = Array.isArray(key) ? key : Object.keys(key);
+        for (const k of keys) if (this._data.has(k)) res[k] = this._data.get(k);
+        return res;
+      },
+      async set(items) { for (const [k, v] of Object.entries(items)) this._data.set(k, v); },
+      async remove(keys) { for (const k of (Array.isArray(keys) ? keys : [keys])) this._data.delete(k); }
+    });
 let operations = Promise.resolve();
 // One mutation queue protects storage read/modify/write across concurrent events.
 const serial = task => { const next = operations.then(task); operations = next.catch(() => {}); return next; };
@@ -46,23 +61,23 @@ const save = state => {
   const next=(writes.get(id) || Promise.resolve()).catch(()=>{}).then(async()=>{
     state=remember(state);
     if(state.closed) {
-      if(active(state)) return chrome.storage.session.set({[PREFIX + id]:state});
+      if(active(state)) return sessionStore.set({[PREFIX + id]:state});
       // Keep the minimized empty object until worker suspension: a stale read
       // must not revive an already finished queue from its previous snapshot.
-      return chrome.storage.session.remove(PREFIX + id);
+      return sessionStore.remove(PREFIX + id);
     }
     const latest=new Map((state.history || []).map(job=>[job.url,job]));
     for(const job of state.jobs) latest.set(job.url,{...job});
     state.history=[...latest.values()].slice(-500);
-    return chrome.storage.session.set({[PREFIX + id]:state});
+    return sessionStore.set({[PREFIX + id]:state});
   });
   writes.set(id,next);
   const clear=()=>{if(writes.get(id)===next)writes.delete(id);};
   next.then(clear,clear);
   return next;
 };
-const load = async id => { const state=(await chrome.storage.session.get(PREFIX + id))[PREFIX + id]; return state ? remember(state.closed ? state : migrateDiscovery(state)) : state; };
-const all = async () => Object.entries(await chrome.storage.session.get(null)).filter(([k]) => k.startsWith(PREFIX)).map(([,v])=>remember(v));
+const load = async id => { const state=(await sessionStore.get(PREFIX + id))[PREFIX + id]; return state ? remember(state.closed ? state : migrateDiscovery(state)) : state; };
+const all = async () => Object.entries(await sessionStore.get(null)).filter(([k]) => k.startsWith(PREFIX)).map(([,v])=>remember(v));
 const active = state => summarizeJobs(state.jobs).active > 0;
 async function scrubClosedTab(tabId) {
   closedTabs.add(tabId);
@@ -73,7 +88,7 @@ async function scrubClosedTab(tabId) {
   };
   for(const state of knownStates.values()) if(state.workspaceTabId===tabId) close(state);
   // After worker restart there may be no in-memory state for this tab yet.
-  const stored=await chrome.storage.session.get(null);
+  const stored=await sessionStore.get(null);
   for(const [key,state] of Object.entries(stored)) if(key.startsWith(PREFIX) && state.workspaceTabId===tabId && !closing.has(state.id)) {
     close(knownStates.get(state.id) || state);
   }
@@ -114,18 +129,18 @@ export async function openWorkspace(tab) {
     if ((await all()).length >= 4) throw new Error('作業タブは4つまでです。使い終わった作業タブを閉じてください。');
     const id = crypto.randomUUID();
     const state = {id, tabId:tab.id, url:tab.url || '', title:(tab.title || 'ページ').slice(0,160), items:[], previousItems:[], scan:{version:DISCOVERY_VERSION,sequence:0,at:null,currentCount:0,previousCount:0,omitted:0}, jobs:[], notices:[], scanned:false};
-    // Open inactive first so messages cannot arrive before the session is persisted.
-    const manager = await chrome.tabs.create({url:chrome.runtime.getURL(`workspace.html?id=${id}`), active:false});
+    await save(state);
+    const manager = await chrome.tabs.create({url:chrome.runtime.getURL(`workspace.html?id=${id}`), active:true});
     state.workspaceTabId = manager.id;
     await save(state);
-    await chrome.tabs.update(manager.id,{active:true});
     return id;
   });
 }
 chrome.action.onClicked.addListener(tab => {
-  openWorkspace(tab).then(() => chrome.action.setBadgeText({text:''})).catch(async error => {
-    await chrome.action.setBadgeText({text:'!'});
-    await chrome.action.setTitle({title:publicError(error)});
+  openWorkspace(tab).then(() => chrome.action.setBadgeText?.({text:''})).catch(async error => {
+    console.error('VideoHarbor openWorkspace error:', error);
+    await chrome.action.setBadgeText?.({text:'!'}).catch(()=>{});
+    await chrome.action.setTitle?.({title:publicError(error)}).catch(()=>{});
   });
 });
 
@@ -216,14 +231,14 @@ async function videoControl(state, message) {
   if (!/^[a-f0-9-]{36}$/.test(message.token || '')
     || !['inspect','prepare','poll','start','pause','resume','stop','close'].includes(message.command)) throw new Error('動画録画の指定が不正です。');
   const ref = videoReference(state, message.reference);
-  const lock = (await chrome.storage.session.get('captureLock')).captureLock;
+  const lock = (await sessionStore.get('captureLock')).captureLock;
   if (lock?.sessionId !== state.id || lock.tabId !== state.workspaceTabId || lock.instance !== message.instance || lock.mode !== 'video') {
     throw new Error('この画面は動画の録画を所有していません。元ページから開き直してください。');
   }
   if (message.command === 'prepare') {
     if (lock.videoToken && lock.videoToken !== message.token) throw new Error('動画の録画はすでに準備されています。');
     lock.videoToken = message.token; lock.videoElementToken = ref.elementToken; lock.videoFrameToken = ref.frameToken;
-    await chrome.storage.session.set({captureLock:lock});
+    await sessionStore.set({captureLock:lock});
   } else if (message.command !== 'inspect' && (lock.videoToken !== message.token || lock.videoElementToken !== ref.elementToken || lock.videoFrameToken !== ref.frameToken)) {
     throw new Error('動画録画の接続が変わりました。元ページからやり直してください。');
   }
@@ -253,9 +268,13 @@ async function pump(state) {
   if (!state.jobs.some(j=>j.status === 'in_progress')) {
     for (const job of state.jobs.filter(j=>j.status === 'queued')) {
       try {
-        job.downloadId = await chrome.downloads.download({url:job.url,filename:job.filename,conflictAction:'uniquify',saveAs:false});
-        job.status='in_progress'; await save(state); await refreshJob(job,state.closed);
-        if (job.status === 'in_progress') break;
+        if(typeof chrome!=='undefined' && chrome.downloads?.download) {
+          job.downloadId = await chrome.downloads.download({url:job.url,filename:job.filename,conflictAction:'uniquify',saveAs:false});
+          job.status='in_progress'; await save(state); await refreshJob(job,state.closed);
+          if (job.status === 'in_progress') break;
+        } else {
+          job.status='interrupted'; job.error='この環境では直接ダウンロードが制限されています。';
+        }
       } catch (error) { job.status='interrupted'; job.error=publicError(error); }
     }
   }
@@ -263,17 +282,17 @@ async function pump(state) {
 }
 async function claim(state, instance, mode, wantStream = true) {
   if (KIND !== 'videos') throw new Error('未対応の操作です。');
-  const current = (await chrome.storage.session.get('captureLock')).captureLock;
+  const current = (await sessionStore.get('captureLock')).captureLock;
   const ownerURL=current && await workspaceURL(current.tabId);
   const ownerState=current && (current.sessionId ? await load(current.sessionId) : (await all()).find(state=>state.workspaceTabId===current.tabId));
   const ownerLive=ownerState && !ownerState.closed && ownerState.workspaceTabId===current.tabId && ownerURL===chrome.runtime.getURL(`workspace.html?id=${ownerState.id}`);
-  if(current && !ownerLive) await chrome.storage.session.remove('captureLock');
+  if(current && !ownerLive) await sessionStore.remove('captureLock');
   if (current && ownerLive && (current.tabId !== state.workspaceTabId || current.instance !== instance)) {
     throw new Error('別の作業タブで録画中です。停止してから開始してください。');
   }
   // Same owner may not start another capture while one is active.
   if (ownerLive && current?.instance === instance) throw new Error('録画はすでに開始されています。');
-  await chrome.storage.session.set({captureLock:{tabId:state.workspaceTabId,sessionId:state.id,instance,mode}});
+  await sessionStore.set({captureLock:{tabId:state.workspaceTabId,sessionId:state.id,instance,mode}});
   try {
     if (mode !== 'tab' || !wantStream) return {};
     const tab = await liveTab(state.tabId);
@@ -281,7 +300,7 @@ async function claim(state, instance, mode, wantStream = true) {
     const captured = await chrome.tabCapture.getCapturedTabs();
     if (captured.some(t=>t.tabId === state.tabId && t.status !== 'stopped' && t.status !== 'error')) throw new Error('このタブはすでに録画されています。');
     return {streamId:await chrome.tabCapture.getMediaStreamId({targetTabId:state.tabId,consumerTabId:state.workspaceTabId})};
-  } catch(error) { await chrome.storage.session.remove('captureLock'); throw error; }
+  } catch(error) { await sessionStore.remove('captureLock'); throw error; }
 }
 chrome.runtime.onMessage.addListener((message,sender,respond) => {
   if (!sender.url?.startsWith(chrome.runtime.getURL('workspace.html')) || sender.id !== chrome.runtime.id) return;
@@ -348,13 +367,13 @@ chrome.runtime.onMessage.addListener((message,sender,respond) => {
       case 'capture': return claim(state,message.instance,message.mode);
       case 'hello': {
         // Reload gets a new instance token; the old page no longer owns a live recorder.
-        const lock = (await chrome.storage.session.get('captureLock')).captureLock;
-        if(lock?.tabId === state.workspaceTabId && lock.instance !== message.instance) await chrome.storage.session.remove('captureLock');
+        const lock = (await sessionStore.get('captureLock')).captureLock;
+        if(lock?.tabId === state.workspaceTabId && lock.instance !== message.instance) await sessionStore.remove('captureLock');
         return state;
       }
       case 'release': {
-        const lock = (await chrome.storage.session.get('captureLock')).captureLock;
-        if(lock?.tabId === state.workspaceTabId && lock.instance === message.instance) await chrome.storage.session.remove('captureLock');
+        const lock = (await sessionStore.get('captureLock')).captureLock;
+        if(lock?.tabId === state.workspaceTabId && lock.instance === message.instance) await sessionStore.remove('captureLock');
         return {};
       }
       default: throw new Error('未対応の操作です。');
@@ -363,7 +382,7 @@ chrome.runtime.onMessage.addListener((message,sender,respond) => {
   return true;
 });
 // Register listeners at worker startup; storage keeps download IDs across suspension.
-chrome.downloads.onChanged.addListener(delta => {
+chrome.downloads?.onChanged?.addListener(delta => {
   if (!delta.state && !delta.error) return;
   serial(async()=> {for(const state of await all()) if(state.jobs.some(j=>j.downloadId === delta.id)) await pump(state);}).catch(()=>{});
 });
@@ -372,8 +391,8 @@ chrome.tabs.onRemoved.addListener(tabId => {
   // Handle rejection immediately while the mutation queue may still be busy.
   closed.catch(()=>{});
   serial(async()=> {
-    const lock = (await chrome.storage.session.get('captureLock')).captureLock;
-    if(lock?.tabId === tabId) await chrome.storage.session.remove('captureLock');
+    const lock = (await sessionStore.get('captureLock')).captureLock;
+    if(lock?.tabId === tabId) await sessionStore.remove('captureLock');
     for(const state of await closed) if(active(state)) await pump(state);
   }).catch(()=>{});
 });
