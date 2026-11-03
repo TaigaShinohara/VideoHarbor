@@ -337,7 +337,7 @@ body.media-saving { padding-bottom: 200px; }
   h1 { font-size: 1.2rem; }
   .brand { gap: 8px; }
   .brand-icon { flex-basis: 33px; width: 33px; height: 33px; border-radius: 8px; }
-  #scan { min-height: 42px; gap: 6px; padding: 8px 12px; font-size: .82rem; }
+  #scan { min-height: 42px; gap: 6px; padding: 8px 12px; font-size: .82rem; white-space: nowrap; flex-shrink: 0; }
   #scan .icon { width: 18px; height: 18px; }
   .tabs { width: 100%; margin-bottom: 18px; }
   .tabs button { flex: 1; min-width: 0; min-height: 42px; gap: 7px; padding: 10px 10px; font-size: .84rem; }

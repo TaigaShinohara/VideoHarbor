@@ -664,21 +664,30 @@ export class RecorderController {
         if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
           const file = new File([result.blob], result.fileName, { type: result.blob.type || 'video/webm' });
           if (typeof navigator.canShare !== 'function' || navigator.canShare({ files: [file] })) {
-            await navigator.share({ files: [file], title: result.fileName });
-            result.saved = true;
-            this._phase = 'saved';
-            this._message = '共有・保存完了。録画データはこの画面に保持しています。';
-            return true;
+            try {
+              await navigator.share({ files: [file], title: result.fileName });
+              result.saved = true;
+              this._phase = 'saved';
+              this._message = '共有・保存完了。録画データはこの画面に保持しています。';
+              return true;
+            } catch (err) {
+              if (err?.name === 'AbortError') {
+                this._phase = 'result';
+                this._message = '共有をキャンセルしました。「録画を保存」から再試行できます。';
+                return false;
+              }
+            }
           }
+        } else {
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = result.fileName;
+          a.style.display = 'none';
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          result.saved = true;
         }
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = result.fileName;
-        a.style.display = 'none';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        result.saved = true;
       }
       this._phase = 'saved';
       this._message = 'ファイル保存完了。録画データはこの画面に保持しています。';

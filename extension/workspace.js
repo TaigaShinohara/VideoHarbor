@@ -122,8 +122,10 @@ function updateMediaUI() {
   }
   for(const el of document.querySelectorAll('.media-save')) {
     const url=elementURL(el),job=mediaSaver.status(url);
-    const text=job?.status==='permission' ? '配信元を許可して保存' : job?.blob ? 'ファイル保存を再試行' : '保存';
-    const iconName=job?.status==='permission' ? 'external' : job?.blob ? 'refresh' : 'download';
+    const hasDownloads=typeof chrome!=='undefined' && Boolean(chrome.downloads?.download);
+    const ready=job?.status==='ready' || Boolean(job?.blob);
+    const text=job?.status==='permission' ? '配信元を許可して保存' : ready ? (hasDownloads ? 'ファイル保存を再試行' : '端末に保存（写真/ファイル）') : '保存';
+    const iconName=job?.status==='permission' ? 'external' : ready ? (hasDownloads ? 'refresh' : 'download') : 'download';
     el.replaceChildren(icon(iconName),document.createTextNode(text));
     el.setAttribute('aria-label',`${el.dataset.displayName || candidateLabel(url)} · ${candidateLabel(url)}${job?.status==='permission' ? 'の配信元を許可して保存' : 'を保存'}`);
   }

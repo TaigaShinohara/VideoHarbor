@@ -541,3 +541,41 @@ test('mobile context without chrome.downloads uses navigator.share when availabl
   assert.ok(shared[0].files?.[0] instanceof File);
   assert.match(result.message,/共有・保存完了/);
 });
+
+test('mobile context transitions to ready when user gesture expires and shares on next tap',async t=>{
+  const shared=[];
+  let attempts=0;
+  const originalShare=navigator.share, originalCanShare=navigator.canShare;
+  Object.defineProperty(navigator,'share',{configurable:true,value:async data=>{
+    attempts++;
+    if(attempts===1) {
+      const err=new Error('User activation expired');
+      err.name='NotAllowedError';
+      throw err;
+    }
+    shared.push(data);
+    return true;
+  }});
+  Object.defineProperty(navigator,'canShare',{configurable:true,value:()=>true});
+  t.after(()=>{
+    if(originalShare)Object.defineProperty(navigator,'share',{configurable:true,value:originalShare});
+    else delete navigator.share;
+    if(originalCanShare)Object.defineProperty(navigator,'canShare',{configurable:true,value:originalCanShare});
+    else delete navigator.canShare;
+  });
+  const h=harness(t,{withoutDownloads:true});
+  await h.saver.start(blobItem,'Mobile Title');
+  const readyResult=h.saver.status(blobItem.url);
+  assert.equal(readyResult.status,'ready');
+  assert.ok(readyResult.blob);
+  assert.match(readyResult.message,/動画の準備完了/);
+  assert.equal(shared.length,0);
+
+  // User taps "端末に保存" with fresh user gesture
+  await h.saver.start(blobItem,'Mobile Title');
+  const completeResult=h.saver.status(blobItem.url);
+  assert.equal(completeResult.status,'complete');
+  assert.equal(shared.length,1);
+  assert.equal(completeResult.blob,undefined);
+  assert.match(completeResult.message,/共有・保存完了/);
+});

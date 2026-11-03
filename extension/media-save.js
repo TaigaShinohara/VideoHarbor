@@ -151,7 +151,17 @@ export class MediaSaver {
           return;
         } catch(err) {
           if(signal.aborted)throw err;
-          // Continue to <a> download fallback if sharing was dismissed or unsupported
+          // In mobile WebKit/Safari, navigator.share requires transient user activation (direct tap).
+          // Long async downloads expire activation (NotAllowedError); users may also dismiss (AbortError).
+          // Retain the blob in a 'ready' state so the next tap on "端末に保存" shares with fresh gesture.
+          // Never fall back to <a download> click on mobile because WebKit navigation to blob: fails
+          // with "WebKitBlobResource error 1".
+          if(err?.name==='NotAllowedError' || err?.name==='AbortError') {
+            result.status='ready';
+            result.blob=blob;
+            result.message=`動画の準備完了 · ${extension.toUpperCase()}${result.audioUnverified ? ' · 音声の有無は未確認' : ''} · 「端末に保存」を押してください`;
+            return;
+          }
         }
       }
     }
@@ -168,6 +178,10 @@ export class MediaSaver {
       result.status='complete';
       result.message=`保存完了 · ${extension.toUpperCase()}${result.audioUnverified ? ' · 音声の有無は未確認' : ''}`;
       delete result.blob;
+    } catch {
+      result.status='ready';
+      result.blob=blob;
+      result.message=`動画の準備完了 · ${extension.toUpperCase()} · 「端末に保存」を押してください`;
     } finally {
       setTimeout(()=>URL.revokeObjectURL(objectURL),60000);
     }
