@@ -3,7 +3,26 @@
   "version": "0.6.3",
   "private": true,
   "type": "module",
-  "description": "VideoHarbor Chrome extension",
+  "description": "VideoHarbor - Browser extension for direct video saving and selective recording (Chrome & Safari Web Extension)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TaigaShinohara/VideoHarbor.git"
+  },
+  "bugs": {
+    "url": "https://github.com/TaigaShinohara/VideoHarbor/issues"
+  },
+  "homepage": "https://github.com/TaigaShinohara/VideoHarbor#readme",
+  "keywords": [
+    "chrome-extension",
+    "safari-web-extension",
+    "video-downloader",
+    "screen-recorder",
+    "hls",
+    "dash",
+    "manifest-v3",
+    "privacy-first"
+  ],
   "scripts": {
     "test": "node --test tests/*.test.js",
     "check": "node scripts/check.mjs",

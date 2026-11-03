@@ -1,8 +1,15 @@
 # VideoHarbor
 
-動画の直接保存と、選んだ動画だけ・タブ全体・画面・ウィンドウの録画を選べるChrome拡張。
+[![CI](https://github.com/TaigaShinohara/VideoHarbor/actions/workflows/ci.yml/badge.svg)](https://github.com/TaigaShinohara/VideoHarbor/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Manifest V3](https://img.shields.io/badge/Manifest-V3-success.svg)](extension/manifest.json)
+[![Platform](https://img.shields.io/badge/Platform-Chrome%20116%2B%20%7C%20iOS%20Safari%2015%2B-orange.svg)](docs/SAFARI-MOBILE.md)
 
-仮名・開発版 v0.6.3。将来のOSS公開に向けた開発版です。GitHubは非公開リポジトリで管理し、Chrome Web Storeには未公開です。公開用名称の重複や商標は未確認です。
+[English](README_EN.md) | 日本語
+
+動画の直接保存と、選んだ動画だけ・タブ全体・画面・ウィンドウの録画を選べるオープンソースのブラウザ拡張機能（Chrome / Safari Web Extension対応）。
+
+完全ローカル処理・外部通信ゼロ・ビルドステップ不要の軽量設計。HLS/DASHのMP4まとめ保存や、動画要素のみのWebM録画に対応しています。
 
 ## Chromeへ読み込む
 
@@ -134,6 +141,11 @@ TS/AACの別音声対応、DASHの対応構成拡大、画面の任意領域録�
 
 これらは未実装です。実サイトで確認した需要と制約に応じて優先順位を決めます。
 
-## ライセンスと公開
+## コントリビューション・行動規範
 
-MITを初期設定として同梱しています。名称、ライセンス、権利表示、プライバシー文書、配布素材を確認してから公開します。公開・ストア申請は今回の作業に含みません。保存できることと再配布できることは別です。自作・許諾済みのメディアなど、保存する権限がある内容で利用してください。
+コミュニティへの参加やコード・ドキュメントの改善を歓迎します。詳細は [CONTRIBUTING.md](CONTRIBUTING.md) および [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) を参照してください。
+セキュリティ脆弱性の報告は [SECURITY.md](SECURITY.md) をご確認ください。
+
+## ライセンス
+
+本プロジェクトは [MIT License](LICENSE) の下で公開されています。自作・許諾済みのメディアなど、保存する権限がある内容でご利用ください。

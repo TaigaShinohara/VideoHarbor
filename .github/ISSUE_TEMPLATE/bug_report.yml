@@ -1,0 +1,57 @@
+name: バグ報告 (Bug Report)
+description: VideoHarborの不具合や予期せぬ動作を報告します
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ### ⚠️ プライバシーと機密情報に関する重要なお願い
+        - **実サイトの署名付きURL、アクセストークン、Cookie、個人プロファイル、私的な録画メディアは絶対に掲載しないでください。**
+        - 不具合は合成URL、テストデータ、または一般に公開されている再現可能な手順で報告してください。
+        - セキュリティ脆弱性の報告は、公開Issueではなく [SECURITY.md](../SECURITY.md) に記載の非公開窓口をご利用ください。
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 不具合の内容
+      description: 何が起きたのか、期待していた動作とどう違ったのかを簡潔に説明してください。
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 再現手順
+      description: 不具合を再現するための手順を順を追って記載してください。
+      placeholder: |
+        1. Chromeで対象ページを開く
+        2. VideoHarborアイコンをクリック
+        3. 「動画を保存」で「MP4」を選択
+        4. 保存ボタンをクリックした際にエラーが発生
+    validations:
+      required: true
+
+  - type: input
+    id: browser-version
+    attributes:
+      label: ブラウザとOSのバージョン
+      description: 例: Chrome 124 / macOS 14.4、または Safari 17 / iOS 17.4
+      placeholder: Chrome 124 (macOS)
+    validations:
+      required: true
+
+  - type: input
+    id: extension-version
+    attributes:
+      label: VideoHarborのバージョン / コミットハッシュ
+      description: 例: v0.6.3 または git commit hash
+      placeholder: v0.6.3
+    validations:
+      required: true
+
+  - type: textarea
+    id: console-log
+    attributes:
+      label: 関連するエラーログ・スクリーンショット
+      description: 開発者ツールのコンソールログや画面表示。個人情報や認証トークン、プライベートなURLが含まれていないことを必ず確認してください。
