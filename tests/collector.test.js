@@ -192,6 +192,17 @@ test('collector rejects unsafe media URLs and preserves stronger duplicate metad
   assert.equal(result.items[0].width,1280);
 });
 
+test('collector filters out advertising, tracking, and affiliate iframes from candidate frames', t => {
+  const result = scan(t, documentFor([
+    node('iframe', {src:'https://rcm.shinobi.jp/r/dummy'}),
+    node('iframe', {src:'https://googleads.g.doubleclick.net/pagead/ads'}),
+    node('iframe', {src:'https://ad.yieldmo.com/sb/123'}),
+    node('iframe', {src:'https://player.test/embed/movie'}),
+  ]));
+  assert.equal(result.frames.length, 1);
+  assert.equal(result.frames[0].url, 'https://player.test/embed/movie');
+});
+
 test('collector bounds candidates, iframe hints and JSON processing with visible notices',t => {
   const result = scan(t,documentFor([
     ...Array.from({length:502},(_,i) => node('a',{href:`/video${i}.mp4`})),

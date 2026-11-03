@@ -47,6 +47,27 @@ export function collect(previousURLs = []) {
   const mediaSuffix = /\.(mp4|webm|mov|m4v|ogv|ogg|m3u8|mpd)(?:[?#]|$)/i;
   const videoMIME = /^(?:video\/|application\/(?:vnd\.apple\.mpegurl|x-mpegurl|dash\+xml))/i;
   const confidence = {video:5,'player-config':4,metadata:3,embed:3,'loaded-resource':2,link:1};
+  const ignoredFrameSuffixes = [
+    'shinobi.jp','doubleclick.net','googlesyndication.com','googleadservices.com','adservice.google.com',
+    'adnxs.com','rubiconproject.com','criteo.com','criteo.net','amazon-adsystem.com','outbrain.com',
+    'taboola.com','adroll.com','smartadserver.com','openx.net','pubmatic.com','yieldmo.com','casalemedia.com',
+    'bidswitch.net','indexexchange.com','revcontent.com','mgid.com','adblade.com','sharethrough.com',
+    'adform.net','scorecardresearch.com','moatads.com','advertising.com','ad-stir.com','i-mobile.co.jp',
+    'microad.jp','microad.net','fout.jp','geniee.jp','fluct.jp','a8.net','moba8.net','valuecommerce.com',
+    'trafficgate.net','accesstrade.net','rentracks.jp','felmat.net','mediba.jp','amoad.com','impact-ad.jp',
+    'ad-delivery.net','fam-ad.com','cirqua.jp','bypass.jp','sponge-ad.com','ladsp.com','xlisting.jp',
+    'popin.cc','logly.co.jp','uzou.jp','t-adpro.com',
+  ];
+  const isIgnoredFrameHost = host => {
+    if (typeof host !== 'string') return false;
+    const h = host.toLowerCase().trim();
+    for (const suffix of ignoredFrameSuffixes) {
+      if (h === suffix || h.endsWith('.' + suffix)) return true;
+    }
+    if (/^(?:ad|ads|adserver|adservice|adclick|tracking)\./i.test(h)) return true;
+    if (/\.(?:yads\.yahoo\.co\.jp)$/i.test(h)) return true;
+    return false;
+  };
   let visited = 0, jsonBytes = 0, jsonNodes = 0, scriptConfigs = 0;
   const decodeHTML = value => value.replace(/&(?:amp|quot|apos|lt|gt|#(?:x[0-9a-f]+|\d+));/gi,entity => {
     const named = {'&amp;':'&','&quot;':'"','&apos;':"'",'&lt;':'<','&gt;':'>'};
@@ -95,6 +116,7 @@ export function collect(previousURLs = []) {
     try {
       const u = new URL(decodeHTML(raw),base); u.hash = '';
       if (!/^https?:$/.test(u.protocol) || u.username || u.password || u.hostname.includes('*') || u.href.length > 16384) return;
+      if (isIgnoredFrameHost(u.hostname)) return;
       const id = `${context.elementToken || local.token}:${u.href}`;
       if (frames.size < FRAME_LIMIT || frames.has(id)) {
         const locatable=['IFRAME','FRAME','OBJECT','EMBED'].includes(context.elementTag);

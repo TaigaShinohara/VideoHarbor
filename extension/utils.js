@@ -48,6 +48,74 @@ export function extensionOf(url, kind) {
   } catch { /* use a neutral suffix for URLs without format information */ }
   return kind === 'images' ? 'img' : 'video';
 }
+export const IGNORED_FRAME_SUFFIXES = [
+  'shinobi.jp',
+  'doubleclick.net',
+  'googlesyndication.com',
+  'googleadservices.com',
+  'adservice.google.com',
+  'adnxs.com',
+  'rubiconproject.com',
+  'criteo.com',
+  'criteo.net',
+  'amazon-adsystem.com',
+  'outbrain.com',
+  'taboola.com',
+  'adroll.com',
+  'smartadserver.com',
+  'openx.net',
+  'pubmatic.com',
+  'yieldmo.com',
+  'casalemedia.com',
+  'bidswitch.net',
+  'indexexchange.com',
+  'revcontent.com',
+  'mgid.com',
+  'adblade.com',
+  'sharethrough.com',
+  'adform.net',
+  'scorecardresearch.com',
+  'moatads.com',
+  'advertising.com',
+  'ad-stir.com',
+  'i-mobile.co.jp',
+  'microad.jp',
+  'microad.net',
+  'fout.jp',
+  'geniee.jp',
+  'fluct.jp',
+  'a8.net',
+  'moba8.net',
+  'valuecommerce.com',
+  'trafficgate.net',
+  'accesstrade.net',
+  'rentracks.jp',
+  'felmat.net',
+  'mediba.jp',
+  'amoad.com',
+  'impact-ad.jp',
+  'ad-delivery.net',
+  'fam-ad.com',
+  'cirqua.jp',
+  'bypass.jp',
+  'sponge-ad.com',
+  'ladsp.com',
+  'xlisting.jp',
+  'popin.cc',
+  'logly.co.jp',
+  'uzou.jp',
+  't-adpro.com',
+];
+export function isIgnoredFrameHost(host) {
+  if (typeof host !== 'string') return false;
+  const h = host.toLowerCase().trim();
+  for (const suffix of IGNORED_FRAME_SUFFIXES) {
+    if (h === suffix || h.endsWith('.' + suffix)) return true;
+  }
+  if (/^(?:ad|ads|adserver|adservice|adclick|tracking)\./i.test(h)) return true;
+  if (/\.(?:yads\.yahoo\.co\.jp)$/i.test(h)) return true;
+  return false;
+}
 export function fileLabel(url) {
   try {
     const u = new URL(url);

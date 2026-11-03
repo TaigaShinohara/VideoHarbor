@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {sanitizePart,mediaType,mediaKind,allowedURL,extensionOf,fileLabel,downloadName,matchesImage,mergeItems,summarizeJobs,publicError} from '../extension/utils.js';
+import {sanitizePart,mediaType,mediaKind,allowedURL,extensionOf,fileLabel,downloadName,matchesImage,mergeItems,summarizeJobs,publicError,isIgnoredFrameHost} from '../extension/utils.js';
 test('filenames stay inside chosen download folder',()=>{
   assert.equal(sanitizePart('../../bad\\name:*'),'_.._bad_name__');
   assert.equal(sanitizePart('..'),'untitled');
@@ -91,4 +91,22 @@ test('direct output names exclude page titles and signed path values across cons
     assert.match(name,/^VideoHarbor\/\d{4}-\d{2}-\d{2}\/video-\d{9}-\d{3,}\.mp4$/);
     assert.doesNotMatch(name,/Synthetic|private|Signature/);
   }
+});
+
+test('isIgnoredFrameHost filters known advertising, tracking, and affiliate hosts', () => {
+  assert.equal(isIgnoredFrameHost('rcm.shinobi.jp'), true);
+  assert.equal(isIgnoredFrameHost('shinobi.jp'), true);
+  assert.equal(isIgnoredFrameHost('googleads.g.doubleclick.net'), true);
+  assert.equal(isIgnoredFrameHost('pagead2.googlesyndication.com'), true);
+  assert.equal(isIgnoredFrameHost('static.criteo.net'), true);
+  assert.equal(isIgnoredFrameHost('ad.yieldmo.com'), true);
+  assert.equal(isIgnoredFrameHost('ads.example.com'), true);
+  assert.equal(isIgnoredFrameHost('tracking.analytics.io'), true);
+  assert.equal(isIgnoredFrameHost('b.yads.yahoo.co.jp'), true);
+  assert.equal(isIgnoredFrameHost('player.test'), false);
+  assert.equal(isIgnoredFrameHost('youtube.com'), false);
+  assert.equal(isIgnoredFrameHost('www.youtube.com'), false);
+  assert.equal(isIgnoredFrameHost('player.vimeo.com'), false);
+  assert.equal(isIgnoredFrameHost(''), false);
+  assert.equal(isIgnoredFrameHost(null), false);
 });

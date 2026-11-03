@@ -1,4 +1,4 @@
-import {extensionOf} from './utils.js';
+import {extensionOf,isIgnoredFrameHost} from './utils.js';
 import {originPattern} from './media-save.js';
 import {groupVideos,formatDuration} from './video-view.js';
 import {originalExtension} from './output-format.js';
@@ -98,8 +98,16 @@ export function renderVideoGroups({state,element,icon,statusElement,onSave,onRec
   }
   $('empty').hidden=direct.length>0 || groups.some(group=>group.recordable);$('record-fallback').hidden=!direct.length;
   $('unsupported').hidden=!unsupported.length;$('unsupported-count').textContent=`(${unsupported.reduce((count,group)=>count+group.items.length,0)}件)`;
-  $('frame-sites').replaceChildren();$('frame-access').hidden=!(state.frames || []).length;
-  for(const [index,frame] of (state.frames || []).entries()) {
+  const validFrames = (state.frames || []).filter(frame => {
+    try {
+      const u = new URL(frame.url);
+      return !isIgnoredFrameHost(u.hostname);
+    } catch {
+      return false;
+    }
+  });
+  $('frame-sites').replaceChildren();$('frame-access').hidden=!validFrames.length;
+  for(const [index,frame] of validFrames.entries()) {
     let origin;try{origin=originPattern(frame.url);}catch{continue;}
     const card=element('article','embed-card'),title=displayText(frame.title) || `ページ内の埋め込み ${index+1}`;
     card.append(element('h3','video-title',title),element('p','hint',`${new URL(origin).hostname} の埋め込みを調べます。許可の範囲はこのサイトです。`));
