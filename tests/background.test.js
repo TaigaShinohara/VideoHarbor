@@ -121,6 +121,19 @@ async function browser(t) {
   };
 }
 
+test('stalled blob execution cannot block capture ownership or release', async t => {
+  const h=await browser(t),url='blob:https://source.test/synthetic';
+  h.state.items=[{url,type:'blob',frameId:0}];h.persist();
+  let finish,entered=false;
+  h.chrome.scripting.executeScript=()=>{entered=true;return new Promise(resolve=>{finish=resolve;});};
+  const reading=h.send({type:'blob-read',url,offset:-1,token:'00000000-0000-4000-8000-000000000001'});
+  await eventually(()=>entered,'blob script started');
+  try {
+    assert.equal((await h.send({type:'capture',mode:'video'})).ok,true);
+    assert.equal((await h.send({type:'release'})).ok,true);
+  } finally {finish([{result:{size:1,mime:'video/webm',bytes:[]}}]);await reading;}
+});
+
 test('BG-01: closing the workspace preserves and completes the already accepted download batch', async (t) => {
   const h = await browser(t);
   h.state.jobs = [

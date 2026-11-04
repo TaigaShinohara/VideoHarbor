@@ -4,6 +4,7 @@ import { readPageBlob } from './page-blob.js';
 import { controlPageVideo } from './page-video-recording.js';
 import { originalExtension, validateOutputFormat } from './output-format.js';
 import { allowedURL, downloadName, summarizeJobs, publicError } from './utils.js';
+import { operationWait } from './operation-wait.js';
 const KIND = 'videos';
 const PREFIX = 'workspace:';
 const sessionStore = (typeof chrome !== 'undefined' && chrome.storage?.session)
@@ -24,6 +25,10 @@ const sessionStore = (typeof chrome !== 'undefined' && chrome.storage?.session)
 let operations = Promise.resolve();
 // One mutation queue protects storage read/modify/write across concurrent events.
 const serial = task => { const next = operations.then(task); operations = next.catch(() => {}); return next; };
+// Capture ownership has its own mutation queue. A slow scan/download acceptance
+// must not starve recording heartbeats, Stop, or lock release in another tab.
+let captureOperations=Promise.resolve();
+const captureSerial=task=>{const next=captureOperations.then(task);captureOperations=next.catch(()=>{});return next;};
 // Closing must not wait behind a pending Chrome download acceptance. Keep the
 // current object so the close projection and the accepting pump share job IDs.
 const knownStates = new Map();
@@ -304,7 +309,9 @@ async function claim(state, instance, mode, wantStream = true) {
 }
 chrome.runtime.onMessage.addListener((message,sender,respond) => {
   if (!sender.url?.startsWith(chrome.runtime.getURL('workspace.html')) || sender.id !== chrome.runtime.id) return;
-  serial(async () => {
+  const schedule=['capture','hello','release','video-control'].includes(message.type) ? captureSerial
+    : message.type==='blob-read' ? task=>Promise.resolve().then(task) : serial;
+  schedule(async () => {
     const state = await load(message.sessionId);
     if (!state || state.closed || sender.tab?.id !== state.workspaceTabId) throw new Error('作業情報が見つかりません。元ページから拡張を押し直してください。');
     switch(message.type) {
@@ -318,7 +325,10 @@ chrome.runtime.onMessage.addListener((message,sender,respond) => {
         if(!item || !tab || tab.url!==state.url) throw new Error('元ページの動画情報が変わりました。元ページから開き直してください。');
         if(!Number.isSafeInteger(message.offset) || message.offset < -2 || !/^[a-f0-9-]{36}$/.test(message.token)) throw new Error('動画データの指定が不正です。');
         const target={tabId:state.tabId,...(item.documentId ? {documentIds:[item.documentId]} : {frameIds:[item.frameId || 0]})};
-        const [result]=await chrome.scripting.executeScript({target,func:readPageBlob,args:[item.url,message.offset,message.token]});
+        const timeout=message.offset===-1 ? 60000 : message.offset===-2 ? 2000 : 10000;
+        const [result]=await operationWait(chrome.scripting.executeScript({target,func:readPageBlob,args:[item.url,message.offset,message.token,Date.now()+timeout]}),{timeout});
+        const current=await load(message.sessionId);
+        if(!current || current.closed || current.workspaceTabId!==sender.tab?.id)throw new Error('作業画面との接続が終了しました。');
         if(!result?.result || result.result.error) throw new Error(result?.result?.error || 'ページ内動画を取得できませんでした。');
         return result.result;
       }

@@ -5,6 +5,7 @@ import { MediaProcessor } from './media-processing.js';
 import { validateOutputFormat } from './output-format.js';
 import { publicError } from './utils.js';
 import { outputName } from './filenames.js';
+import { operationWait } from './operation-wait.js';
 
 export function originPattern(url) {
   const value=new URL(url);
@@ -84,14 +85,14 @@ export class MediaSaver {
         extension=plan.extension;
       } else if(!blob && item.type==='blob') {
         blobToken=crypto.randomUUID();
-        const metadata=await this.readBlob(item.url,-1,blobToken);signal.throwIfAborted();
+        const metadata=await operationWait(this.readBlob(item.url,-1,blobToken),{signal,timeout:60000});signal.throwIfAborted();
         if(outputFormat==='mp4' && !/^video\/(?:mp4|x-m4v)(?:;|$)/i.test(metadata.mime))throw new Error('このページ内動画はMP4ではありません。「元の形式」で保存してください。');
         extension=/mp4|m4v/.test(metadata.mime) ? 'mp4' : /quicktime/.test(metadata.mime) ? 'mov' : /ogg/.test(metadata.mime) ? 'ogv' : 'webm';
         result.status='fetching';result.message='ページ内の動画ファイルを取得しています。';this.emit();
         const parts=[];let offset=0;
         while(offset<metadata.size) {
           signal.throwIfAborted();
-          const part=await this.readBlob(item.url,offset,blobToken);signal.throwIfAborted();
+          const part=await operationWait(this.readBlob(item.url,offset,blobToken),{signal});signal.throwIfAborted();
           if(part.size!==metadata.size || part.mime!==metadata.mime || !part.bytes.length || part.bytes.length>262144 || offset+part.bytes.length>metadata.size)throw new Error('ページ内動画が変化しました。再スキャンしてください。');
           parts.push(new Uint8Array(part.bytes));offset+=part.bytes.length;result.bytesReceived=offset;this.emit();
         }
@@ -130,9 +131,11 @@ export class MediaSaver {
       result.origins=error.origins;
       result.message=operation.controller.signal.aborted ? '保存を停止しました。' : publicError(error);
     } finally {
-      if(wakeLock)await wakeLock.release().catch(()=>{});
+      if(wakeLock)void Promise.resolve(wakeLock.release()).catch(()=>{});
       operation.controller.abort();operation.processor?.close();
-      if(blobToken)await this.readBlob(item.url,-2,blobToken).catch(()=>{});
+      // Cleanup must not strand Stop when the source frame is frozen. Its token
+      // and deadline also reject an old result if that frame later resumes.
+      if(blobToken)void operationWait(this.readBlob(item.url,-2,blobToken),{timeout:2000}).catch(()=>{});
       if(objectURL)URL.revokeObjectURL(objectURL);
       if(this.operation===operation){this.operation=null;this.busy=false;this.current=null;this.downloadId=null;this.controller=null;this.emit();}
     }
