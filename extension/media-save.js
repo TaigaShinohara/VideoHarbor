@@ -7,6 +7,8 @@ import { publicError } from './utils.js';
 import { outputName } from './filenames.js';
 import { operationWait } from './operation-wait.js';
 import { shareFile } from './file-share.js';
+import { readDirectFile } from './direct-file.js';
+import { createMediaBudget } from './media-validation.js';
 
 export function originPattern(url) {
   const value=new URL(url);
@@ -103,6 +105,12 @@ export class MediaSaver {
           if(this.operation===operation && !signal.aborted){Object.assign(result,progress);this.emit();}
         }});
         extension=plan.extension;
+      } else if(!blob && item.type==='direct') {
+        result.status='fetching';result.message='動画ファイルを取得しています。最大256 MiBです。';this.emit();
+        const file=await readDirectFile(item.url,this.fetchResource.bind(this),{signal,onProgress:bytes=>{result.bytesReceived=bytes;this.emit();}});
+        extension=file.extension;
+        const bytes=['mp4','mov'].includes(extension) ? await processor().validate(file.bytes,'mp4','file',createMediaBudget()) : file.bytes;
+        signal.throwIfAborted();blob=new Blob([bytes],{type:file.mime});
       } else if(!blob && item.type==='blob') {
         blobToken=crypto.randomUUID();
         const metadata=await operationWait(this.readBlob(item.url,-1,blobToken),{signal,timeout:60000});signal.throwIfAborted();

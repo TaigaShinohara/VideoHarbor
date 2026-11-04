@@ -34,7 +34,8 @@
     "test:worker": "node tests/worker-browser.mjs",
     "test:endurance": "node tests/recording-endurance.mjs",
     "qa:ux": "node scripts/ux-fixture.mjs",
-    "test:privacy": "node tests/session-privacy-browser.mjs"
+    "test:privacy": "node tests/session-privacy-browser.mjs",
+    "test:stability": "node tests/stability-browser.mjs"
   },
   "devDependencies": {
     "playwright": "1.64.1"

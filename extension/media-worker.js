@@ -8,7 +8,7 @@ export function processMedia(kind,payload) {
   if(!payload || typeof payload!=='object')throw new Error('動画データの指定が不正です。');
   if(kind==='validate') {
     const {bytes,extension,init,boxes}=payload;
-    if(!(bytes instanceof Uint8Array) || bytes.byteLength>268435456 || !['mp4','ts'].includes(extension) || typeof init!=='boolean' || !Number.isSafeInteger(boxes) || boxes<0 || boxes>MEDIA_BOX_LIMIT)throw new Error('動画データの指定が不正です。');
+    if(!(bytes instanceof Uint8Array) || bytes.byteLength>268435456 || !['mp4','ts'].includes(extension) || (typeof init!=='boolean' && init!=='file') || !Number.isSafeInteger(boxes) || boxes<0 || boxes>MEDIA_BOX_LIMIT)throw new Error('動画データの指定が不正です。');
     const budget={boxes};validateMediaSegment(bytes,extension,init,budget);
     return {bytes,boxes:budget.boxes};
   }

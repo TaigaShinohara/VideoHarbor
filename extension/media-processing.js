@@ -55,7 +55,7 @@ export class MediaProcessor {
   }
   async validate(bytes,extension,init,budget) {
     const length=bytes.byteLength,previous=budget.boxes;
-    const result=await this.run('validate',{bytes,extension,init:Boolean(init),boxes:previous});
+    const result=await this.run('validate',{bytes,extension,init:init==='file' ? 'file' : Boolean(init),boxes:previous});
     if(!(result?.bytes instanceof Uint8Array) || result.bytes.byteLength!==length || !Number.isSafeInteger(result.boxes) || result.boxes<previous || result.boxes>MEDIA_BOX_LIMIT) {
       this.close(failure());throw failure();
     }

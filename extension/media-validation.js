@@ -37,6 +37,6 @@ export function validateMediaSegment(bytes,extension,init,budget=createMediaBudg
     else if(type===0x6d646174)seen|=8; // mdat
     at+=size;
   }
-  if(init ? (seen&3)!==3 || Boolean(seen&4) : (seen&12)!==12 || Boolean(seen&2))fail('このHLSのMP4構成には未対応です。形式を変えて保存できないため中断しました。');
+  if(init==='file' ? (seen&10)!==10 : init ? (seen&3)!==3 || Boolean(seen&4) : (seen&12)!==12 || Boolean(seen&2))fail('このMP4構成には未対応です。形式を変えて保存できないため中断しました。');
   return bytes;
 }
