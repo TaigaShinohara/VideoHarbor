@@ -79,6 +79,16 @@ test('origin permission patterns are scoped hosts and reject unsafe protocols or
   for(const url of ['file:///movie','javascript:alert(1)','https://name:password@cdn.test/file','https://*/movie.m3u8','https://*.cdn.test/movie.m3u8'])assert.throws(()=>originPattern(url));
 });
 
+test('direct MP4 without downloads uses bounded acquisition and retains a shareable file',async t=>{
+  const mp4=new Uint8Array([0,0,0,16,102,116,121,112,105,115,111,109,0,0,0,0,0,0,0,8,109,111,111,118,0,0,0,9,109,100,97,116,1]);
+  const h=harness(t,{withoutDownloads:true,granted:['https://cdn.test/*'],fetch:async()=>new Response(mp4,{headers:{'content-type':'video/mp4'}})});
+  const item={type:'direct',url:'https://cdn.test/movie.mp4',mime:'video/mp4'};
+  await h.saver.start(item,'Title','mp4');
+  const r=h.saver.status(item.url);assert.equal(r.status,'ready');assert.equal(r.extension,'mp4');
+  assert.deepEqual(new Uint8Array(await r.blob.arrayBuffer()),mp4);
+  assert.match(r.downloadName,/\.mp4$/);assert.equal(h.saver.busy,false);
+});
+
 test('unsaved ready data blocks another candidate and format change without losing its buffer',async t=>{
   const h=harness(t,{state:'interrupted'});await h.saver.start(blobItem,'Title');
   const first=h.saver.status(blobItem.url),calls=h.calls.length;

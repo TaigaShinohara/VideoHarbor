@@ -242,7 +242,7 @@ function renderVideos() {
       if(isBusy() || recorder?.busy)return;
       try {
         const outputFormat=validateOutputFormat(item,formatSelections.get(item.url) || 'auto');
-        if(item.type==='direct')return saveURLs([item.url],outputFormat);
+        if(item.type==='direct' && chrome.downloads?.download)return saveURLs([item.url],outputFormat);
         void mediaSaver.start(item,state.title,outputFormat).catch(error);
       } catch(e){error(e);}
     },
