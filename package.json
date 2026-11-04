@@ -1,6 +1,6 @@
 {
   "name": "videoharbor",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "private": true,
   "type": "module",
   "description": "VideoHarbor - Browser extension for direct video saving and selective recording (Chrome & Safari Web Extension)",

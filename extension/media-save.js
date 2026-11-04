@@ -27,7 +27,7 @@ export class MediaSaver {
     this.current=null;this.controller=null;this.downloadId=null;
     this.processorFactory=processorFactory;this.operation=null;this.disposed=false;
   }
-  emit() {this.onUpdate();}
+  emit() {try {this.onUpdate();}catch{ /* Presentation failures must not strand acquisition or cleanup. */ }}
   status(url) {return this.results.get(url);}
   retained() {return [...this.results].find(([,result])=>result.blob);}
   discard(url) {
@@ -72,6 +72,8 @@ export class MediaSaver {
         .finally(()=>{this.busy=false;this.current=null;this.emit();});
     }
     const permission=!previous?.blob && previous?.origins?.length ? chrome.permissions.request({origins:previous.origins}) : Promise.resolve(true);
+    // A permission API can reject while the best-effort wake lock is pending.
+    Promise.resolve(permission).catch(()=>{});
     for(const [url,result] of this.results) {
       if(this.results.size<100)break;
       if(url!==item.url && !result.blob)this.results.delete(url);
@@ -81,17 +83,23 @@ export class MediaSaver {
     return this.run(item,title,permission,previous,outputFormat,operation);
   }
   async run(item,title,permission,previous,outputFormat,operation) {
-    let objectURL,blobToken,wakeLock=null;
+    let objectURL,blobToken;
     const sameFormat=previous?.outputFormat===outputFormat;
     const result={...(sameFormat && previous?.blob ? {blob:previous.blob,extension:previous.extension} : {}),source:{type:item.type,mime:item.mime},status:'preparing',message:'動画の配信情報を確認しています。',bytesReceived:0,outputFormat,audioUnverified:sameFormat && Boolean(previous?.audioUnverified),
       downloadName:sameFormat && previous?.status!=='complete' ? previous?.downloadName : undefined};
     this.results.set(item.url,result);this.emit();
     try {
-      if(typeof navigator!=='undefined' && 'wakeLock' in navigator && typeof navigator.wakeLock.request==='function') {
-        wakeLock=await navigator.wakeLock.request('screen').catch(()=>null);
-      }
-      if(!await permission)throw new Error('配信元へのアクセスは許可されませんでした。もう一度「保存」から試せます。');
       const signal=operation.controller.signal;
+      if(typeof navigator!=='undefined' && 'wakeLock' in navigator && typeof navigator.wakeLock.request==='function') {
+        const request=Promise.resolve().then(()=>signal.aborted ? null : navigator.wakeLock.request('screen')).catch(()=>null);
+        request.then(lock=>{
+          if(!lock)return;
+          if(signal.aborted || this.operation!==operation)void Promise.resolve().then(()=>lock.release()).catch(()=>{});
+          else operation.wakeLock=lock;
+        }).catch(()=>{});
+        await operationWait(request,{signal,timeout:2000}).catch(error=>{if(signal.aborted)throw error;});
+      }
+      if(!await operationWait(permission,{signal,timeout:60000}))throw new Error('配信元へのアクセスは許可されませんでした。もう一度「保存」から試せます。');
       const processor=()=>operation.processor ||= this.processorFactory({signal});
       signal.throwIfAborted();
       let blob=sameFormat ? previous?.blob : null, extension=sameFormat ? previous?.extension : undefined;
@@ -159,7 +167,7 @@ export class MediaSaver {
       result.origins=error.origins;
       result.message=operation.controller.signal.aborted ? '保存を停止しました。' : publicError(error);
     } finally {
-      if(wakeLock)void Promise.resolve(wakeLock.release()).catch(()=>{});
+      if(operation.wakeLock)void Promise.resolve().then(()=>operation.wakeLock.release()).catch(()=>{});
       operation.controller.abort();operation.processor?.close();
       // Cleanup must not strand Stop when the source frame is frozen. Its token
       // and deadline also reject an old result if that frame later resumes.

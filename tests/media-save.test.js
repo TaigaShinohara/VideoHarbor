@@ -73,6 +73,40 @@ test('cancel settles a stalled blob request and cleanup without waiting for its 
   assert.equal(h.calls.some(c=>c[0]==='download'),false);
 });
 
+test('cancel also settles an unresponsive wake-lock request and releases a late lock',async t=>{
+  const before=Object.getOwnPropertyDescriptor(navigator,'wakeLock'),pending=deferred();let releases=0;
+  Object.defineProperty(navigator,'wakeLock',{configurable:true,value:{request:()=>pending.promise}});
+  t.after(()=>{if(before)Object.defineProperty(navigator,'wakeLock',before);else delete navigator.wakeLock;});
+  const h=harness(t);const saving=h.saver.start(blobItem,'Title');await tick();
+  h.saver.cancel();await eventually(()=>!h.saver.busy);await saving;
+  pending.resolve({release:async()=>{releases++;}});await tick();assert.equal(releases,1);
+  assert.equal(h.calls.some(c=>c[0]==='download'),false);
+});
+
+test('cancel does not wait for a permission decision and a late grant cannot start a download',async t=>{
+  const h=harness(t),permission=deferred();
+  chrome.permissions.request=()=>permission.promise;
+  h.saver.results.set(blobItem.url,{status:'permission',origins:['https://cdn.test/*'],outputFormat:'auto'});
+  const saving=h.saver.start(blobItem,'Title');await tick();h.saver.cancel();
+  await eventually(()=>!h.saver.busy);await saving;permission.resolve(true);await tick();
+  assert.equal(h.saver.status(blobItem.url).status,'interrupted');
+  assert.equal(h.calls.some(c=>c[0]==='download'),false);
+});
+
+test('optional wake lock throwing synchronously does not prevent a video save',async t=>{
+  const before=Object.getOwnPropertyDescriptor(navigator,'wakeLock');
+  Object.defineProperty(navigator,'wakeLock',{configurable:true,value:{request(){throw new Error('synthetic policy rejection');}}});
+  t.after(()=>{if(before)Object.defineProperty(navigator,'wakeLock',before);else delete navigator.wakeLock;});
+  const h=harness(t);await h.saver.start(blobItem,'Title');
+  assert.equal(h.saver.status(blobItem.url).status,'complete');assert.equal(h.saver.busy,false);
+});
+
+test('presentation callback exceptions cannot strand a save or its cleanup',async t=>{
+  const h=harness(t,{onUpdate(){throw new Error('synthetic rendering failure');}});
+  await h.saver.start(blobItem,'Title');assert.equal(h.saver.status(blobItem.url).status,'complete');
+  assert.equal(h.saver.busy,false);assert.equal(h.released.length,1);
+});
+
 test('origin permission patterns are scoped hosts and reject unsafe protocols or credentials',()=>{
   assert.equal(originPattern('https://cdn.test:8443/media.m3u8'),'https://cdn.test/*');
   assert.equal(originPattern('http://[::1]:8080/media'),'http://[::1]/*');

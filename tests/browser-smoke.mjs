@@ -143,6 +143,10 @@ try {
     assert.equal(await blueGroup.locator('.source-alternatives .direct-save').isVisible(),true);
     await blueGroup.locator('.source-alternatives .direct-save').click();await manager.waitForFunction(()=>document.querySelector('.source-alternatives .item-status[data-state="complete"]'));
     await blueGroup.locator('.source-alternatives .show-file').click();
+    for(let tries=0;tries<100;tries++) {
+      if(await worker.evaluate(()=>globalThis.__shownDownloads.length===1))break;
+      await manager.waitForTimeout(20);
+    }
     assert.equal(await worker.evaluate(()=>globalThis.__shownDownloads.length),1,'confirmed output has a folder action using its own download ID');
     await blueGroup.locator('.source-alternatives > summary').click();
     const hlsFormat=(await candidateLocator(manager,origin+'/stream.m3u8')).locator('.output-format');
@@ -292,6 +296,10 @@ try {
     assert.equal(await manager.locator('#record-layout').evaluate(el=>el.firstElementChild.id),'record-stage','saved result precedes next-recording settings in keyboard and DOM order');
     assert.match(await manager.locator('#result-file-name').textContent(),/\.webm$/);
     await manager.locator('#show-record-file').click();
+    for(let tries=0;tries<100;tries++) {
+      if(await worker.evaluate(()=>globalThis.__shownDownloads.length===2))break;
+      await manager.waitForTimeout(20);
+    }
     assert.equal(await worker.evaluate(()=>globalThis.__shownDownloads.length),2,'memory recording folder action uses a proven extension download');
     await manager.locator('#record-audio').uncheck();
     const [savedCapture]=await manager.evaluate(()=>chrome.downloads.search({urlRegex:'^blob:'}));

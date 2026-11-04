@@ -26,10 +26,11 @@ Zero build steps, zero external runtime dependencies, 100% local processing.
   - **Tab & Display Recording**: Supports tab capture (`tabCapture`) and full screen / window recording via standard picker (`getDisplayMedia`).
   - Sequential streaming file write support via File System Access API (OPFS).
 - **Mobile & Safari Web Extension Support**:
-  - Fully compatible with iOS 15+ / iPadOS / macOS Safari via Safari Web Extension conversion (see [docs/SAFARI-MOBILE.md](docs/SAFARI-MOBILE.md)).
+  - Safari Web Extension conversion for iOS / iPadOS / macOS. API availability and verified environments vary; see [docs/SAFARI-MOBILE.md](docs/SAFARI-MOBILE.md).
   - Responsive layout with `env(safe-area-inset-*)` adherence and touch-friendly 44px+ tap targets.
-  - Fallback to **Web Share API (`navigator.share`)** for saving directly to iOS Photos or Files app when `chrome.downloads` is unavailable.
-  - **Screen Wake Lock API** prevents device sleep during long HLS/DASH downloads or Worker remuxing.
+  - Without `chrome.downloads`, direct MP4 files can also be fetched and inspected within a 256 MiB budget, then handed to a destination through **Web Share API**. A successful share means handoff, not confirmed persistence in Photos or Files.
+  - One prepared file is retained per workspace until confirmed download completion or explicit discard. Retry sharing uses the retained bytes, including after rescanning. Another source or format cannot silently replace them. Closing/reloading the workspace or stopping the browser loses in-memory data. See the [stability validation record](docs/STABILITY-2026-11-04.md).
+  - Requests **Screen Wake Lock** during acquisition when available and permitted. Keep the workspace visible; this cannot guarantee continued execution during OS sleep or background suspension.
 - **Privacy & Security by Design**:
   - **No external telemetry, analytics, or cloud relay**: All parsing, remuxing, and recording occur inside your local browser.
   - **Least Privilege (`activeTab`)**: Does not require broad `<all_urls>` host permissions. External HLS origins are prompted on-demand with user consent.
