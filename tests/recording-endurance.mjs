@@ -69,7 +69,7 @@ try {
   // connectOverCDP(noDefaults) avoids Playwright's per-session forced-visible
   // focus override, while this owned process still uses only our scratch profile.
   const executable=process.env.CHROME_EXECUTABLE || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-  ownedChrome=spawn(executable,[`--user-data-dir=${join(scratch,'profile')}`,'--remote-debugging-port=0','--remote-debugging-address=127.0.0.1',
+  ownedChrome=spawn(executable,['--headless=new',`--user-data-dir=${join(scratch,'profile')}`,'--remote-debugging-port=0','--remote-debugging-address=127.0.0.1',
     '--enable-unsafe-extension-debugging','--autoplay-policy=no-user-gesture-required','--no-first-run','--no-default-browser-check',
     '--disable-background-networking','--disable-component-update','--disable-default-apps','--disable-sync',
     '--use-mock-keychain','--password-store=basic','about:blank'],{stdio:'ignore'});

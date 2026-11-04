@@ -104,3 +104,19 @@ test('release aborts an in-flight reader and a late completion cannot replace a 
   assert.equal(globalThis[key]?.token,otherToken);
   assert.equal((await readPageBlob(url,0,otherToken)).bytes[0],0x1a);
 });
+
+test('an expired injected request or a cleanup arriving before preparation cannot create a snapshot',async t=>{
+  const h=harness(t,webm());
+  assert.match((await readPageBlob(url,-1,token,Date.now()-1)).error,/期限切れ/);
+  await readPageBlob(url,-2,token);
+  assert.match((await readPageBlob(url,-1,token)).error,/停止/);
+  assert.equal(h.fetches,0);assert.equal(globalThis[key],undefined);
+});
+
+test('the source deadline cancels a stalled reader even without a workspace cleanup message',async t=>{
+  t.mock.timers.enable({apis:['setTimeout']});const h=harness(t,webm());let cancelled=false;
+  h.response=()=>new Response(new ReadableStream({cancel(){cancelled=true;}}),{headers:{'content-type':'video/webm'}});
+  const reading=readPageBlob(url,-1,token,Date.now()+1000);
+  await new Promise(r=>setImmediate(r));t.mock.timers.tick(1001);await reading;
+  assert.equal(cancelled,true);assert.equal(globalThis[key],undefined);
+});

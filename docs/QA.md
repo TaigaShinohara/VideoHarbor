@@ -1,5 +1,13 @@
 # QA — v0.1
 
+## 安定性レビュー4件の修正 — 2026-11-04 / v0.6.4
+
+- PR #32〜#34で停止不能、未保存データ消失、共有失敗の成功表示、mobile直接MP4保存の欠落を修正。最終点検でwake lock/許可判断の取消しと遅延結果の保護も追加。
+- 単体414件PASS、FAIL/SKIPなし。check/diff PASS。Chrome 156/116の新しいstability統合試験とvideo各13件、Chrome 156のembedded/security/privacy/worker試験を実施。
+- iOS 18.5シミュレータで合成MP4/HLSの検出、直接MP4の取得・Worker検査・保持と明示再共有による標準共有シート表示を確認。保存先ボタンの最終操作は本人確認待ち。
+- 実時間30分の耐久再試験は結果確定後に記録する。初回は11分後に非表示条件が崩れたため中断扱い。時計の短縮なし。
+- 詳細・試験条件・失敗したfixtureの扱い・残る実機確認は [STABILITY-2026-11-04.md](STABILITY-2026-11-04.md)。実OS picker、物理音声、物理iPhoneの保存、OS sleepを自動検証済みにしていない。
+
 ## モバイル（iOS Safari / スマートフォン）対応とSafari Web Extension変換 — 2026-11-03
 
 - `npm test`: 389件PASS、失敗・SKIPなし（Web Share APIフォールバック、User Activation失効時のready状態復帰および再タップ時共有テスト含む）。`npm run check`: PASS。`npm run test:browser`: 隔離ChromeでPASS。
