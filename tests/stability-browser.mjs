@@ -17,10 +17,19 @@ try {
   const clipPath=join(scratch,'clip.mp4');
   run('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=160x90:rate=12','-f','lavfi','-i','sine=frequency=600:sample_rate=48000','-t','4','-c:v','libx264','-preset','ultrafast','-threads','1','-c:a','aac','-movflags','+faststart',clipPath]);
   const clip=await readFile(clipPath),hash=createHash('sha256').update(clip).digest('hex');
+  const playbackPath=join(scratch,'playback.webm');
+  run('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=160x90:rate=12','-f','lavfi','-i','sine=frequency=600:sample_rate=48000','-t','4','-c:v','libvpx','-deadline','realtime','-threads','1','-c:a','libopus',playbackPath]);
+  const playback=await readFile(playbackPath);
   server=createServer((req,res)=>{
-    if(req.url==='/clip.mp4'){requests++;res.writeHead(200,{'Content-Type':'video/mp4','Content-Length':clip.length});res.end(clip);return;}
+    if(req.url==='/playback.webm'){res.writeHead(200,{'Content-Type':'video/webm','Content-Length':playback.length});res.end(playback);return;}
+    if(req.url==='/clip.mp4'){
+      requests++;const range=/^bytes=(\d+)-(\d*)$/.exec(req.headers.range || '');
+      const start=range ? Number(range[1]) : 0,end=range&&range[2] ? Math.min(Number(range[2]),clip.length-1) : clip.length-1;
+      res.writeHead(range ? 206 : 200,{'Content-Type':'video/mp4','Content-Length':end-start+1,'Accept-Ranges':'bytes',...(range ? {'Content-Range':`bytes ${start}-${end}/${clip.length}`} : {})});
+      res.end(clip.subarray(start,end+1));return;
+    }
     res.writeHead(200,{'Content-Type':'text/html'});
-    res.end('<!doctype html><title>Stability fixture</title><video id="v" controls loop preload="auto" src="/clip.mp4"></video><video id="blob" controls></video><script>fetch("/clip.mp4").then(r=>r.blob()).then(b=>{document.querySelector("#blob").src=URL.createObjectURL(b);window.ready=true;});</script>');
+    res.end('<!doctype html><title>Stability fixture</title><video id="v" controls loop preload="auto" src="/playback.webm"></video><video id="blob" controls></video><a href="/clip.mp4">MP4 fixture</a><script>fetch("/clip.mp4").then(r=>r.blob()).then(b=>{document.querySelector("#blob").src=URL.createObjectURL(b);window.ready=true;});</script>');
   });
   await new Promise(r=>server.listen(0,'127.0.0.1',r));const origin=`http://127.0.0.1:${server.address().port}`;
   await cp(fileURLToPath(new URL('../extension',import.meta.url)),extension,{recursive:true});
@@ -33,7 +42,11 @@ try {
   const runtime=await launchTestExtension(chromium,join(scratch,'profile'),extension,{ignoreDefaultArgs:['--disable-extensions'],args:['--autoplay-policy=no-user-gesture-required','--no-first-run'],viewport:{width:1200,height:900}});
   ({context}=runtime);context.setDefaultTimeout(15000);const errors=[];
   const sourceA=await context.newPage(),sourceB=await context.newPage();
-  for(const [i,page] of [sourceA,sourceB].entries()){await page.goto(origin+`/source-${i}`);await page.waitForFunction(()=>window.ready&&document.querySelector('#v').readyState>=2);}
+  for(const [i,page] of [sourceA,sourceB].entries()){
+    await page.goto(origin+`/source-${i}`);await page.waitForFunction(()=>window.ready);
+    await page.evaluate(async()=>{const v=document.querySelector('#v');await v.play();v.pause();v.currentTime=0;});
+    await page.waitForFunction(()=>document.querySelector('#v').readyState>=2&&!document.querySelector('#v').seeking);
+  }
   async function open(page){const tab=await runtime.worker.evaluate(async url=>(await chrome.tabs.query({})).find(t=>t.url===url),page.url());
     const [manager]=await Promise.all([context.waitForEvent('page'),runtime.worker.evaluate(tab=>__openWorkspace(tab),tab)]);
     manager.on('pageerror',error=>errors.push(error.name));await manager.waitForFunction(()=>globalThis.__saver&&document.querySelector('#count').textContent);return manager;}
@@ -45,7 +58,7 @@ try {
     const {prepareVideoCapture}=await import('./video-capture.js');
     const sessionId=new URL(location.href).searchParams.get('id'),instance='stability-browser';
     const send=async(type,extra={})=>{const r=await chrome.runtime.sendMessage({type,sessionId,instance,...extra});if(!r.ok)throw new Error(r.error);return r.data;};
-    const state=await send('get'),ref=state.videoElements.find(ref=>ref.frameId===0&&ref.currentSrc?.endsWith('/clip.mp4')) || state.videoElements.find(ref=>ref.frameId===0);
+    const state=await send('get'),ref=state.videoElements.find(ref=>ref.frameId===0&&ref.currentSrc?.endsWith('/playback.webm')) || state.videoElements.find(ref=>ref.frameId===0);
     window.probeRecorder=new RecorderController({source:state,acquire:mode=>send('capture',{mode}),release:()=>send('release'),prepareVideo:options=>prepareVideoCapture({send,...options})});
     return probeRecorder.start('video',true,'memory',ref);
   }),true);
@@ -76,7 +89,8 @@ try {
       shares.push({active:navigator.userActivation.isActive,name:data.files[0].name,hash:Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))).map(b=>b.toString(16).padStart(2,'0')).join('')});
     }});
   });
-  await a.locator('.direct-save').first().click();await a.waitForFunction(()=>!__saver.busy&&__saver.retained());
+  const directId=await a.evaluate(()=>{const match=Array.from(document.querySelectorAll('.video-card')).find(card=>card.querySelector('.file-icon')?.textContent.includes('MP4'));return match?.dataset.candidateId;});
+  assert.ok(directId);await a.locator(`.direct-save[data-candidate-id="${directId}"]`).click();await a.waitForFunction(()=>!__saver.busy&&__saver.retained());
   assert.equal(await a.evaluate(()=>__saver.retained()[1].status),'ready');
   assert.equal(await a.locator('#retained-media').isVisible(),true);
   const count=requests;await a.evaluate(()=>{shareFailure=false;});
