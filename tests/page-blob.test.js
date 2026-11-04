@@ -11,8 +11,12 @@ function harness(t,blob) {
   const snapshotDescriptor=Object.getOwnPropertyDescriptor(globalThis,key);
   const h={fetches:0,blob};
   delete globalThis[key];
+  const controlKeys=['VideoHarbor.blobCancelled','VideoHarbor.blobRevision'].map(Symbol.for);
+  const controls=controlKeys.map(key=>globalThis[key]);
+  controlKeys.forEach(key=>delete globalThis[key]);
   Object.defineProperty(globalThis,'fetch',{configurable:true,value:async()=>{h.fetches++;if(h.error)throw h.error;return h.response ? h.response() : new Response(h.blob);}});
   t.after(()=>{
+    controlKeys.forEach((key,i)=>{if(controls[i]===undefined)delete globalThis[key];else globalThis[key]=controls[i];});
     if(globalThis[key])clearTimeout(globalThis[key].timer);
     if(snapshotDescriptor)Object.defineProperty(globalThis,key,snapshotDescriptor);else delete globalThis[key];
     if(fetchDescriptor)Object.defineProperty(globalThis,'fetch',fetchDescriptor);else delete globalThis.fetch;
@@ -82,4 +86,21 @@ test('MediaSource or revoked blob fetch failure offers fallback without retainin
   const h=harness(t,new Blob(['video'],{type:'video/mp4'}));h.error=new TypeError('Failed to fetch blob:synthetic');
   assert.match((await readPageBlob(url,-1,token)).error,/分割配信.*録画/);
   assert.equal(globalThis[key],undefined);
+});
+
+test('release aborts an in-flight reader and a late completion cannot replace a newer snapshot',async t=>{
+  const h=harness(t,webm());let finish,entered=false;
+  h.response=()=>({headers:new Headers({'content-type':'video/webm'}),body:{getReader:()=>({
+    read:()=>{entered=true;return new Promise(resolve=>{finish=resolve;});},cancel:async()=>{},releaseLock:()=>{},
+  })}});
+  let settled=false;
+  const pending=readPageBlob(url,-1,token).then(value=>{settled=true;return value;});
+  for(let i=0;i<10&&!entered;i++)await new Promise(r=>setImmediate(r));
+  await readPageBlob(url,-2,token);
+  for(let i=0;i<10&&!settled;i++)await new Promise(r=>setImmediate(r));
+  assert.equal(settled,true,'cancellation settles without the stalled reader replying');
+  h.response=null;await readPageBlob(url,-1,otherToken);
+  finish({done:true});await pending;
+  assert.equal(globalThis[key]?.token,otherToken);
+  assert.equal((await readPageBlob(url,0,otherToken)).bytes[0],0x1a);
 });

@@ -64,6 +64,15 @@ function harness(t,options={}) {
   return h;
 }
 
+test('cancel settles a stalled blob request and cleanup without waiting for its reply',async t=>{
+  let entered=false;
+  const h=harness(t,{readBlob:()=>{entered=true;return new Promise(()=>{});}});
+  const saving=h.saver.start(blobItem,'Title');await eventually(()=>entered);
+  h.saver.cancel();await eventually(()=>!h.saver.busy);await saving;
+  assert.equal(h.saver.status(blobItem.url).status,'interrupted');
+  assert.equal(h.calls.some(c=>c[0]==='download'),false);
+});
+
 test('origin permission patterns are scoped hosts and reject unsafe protocols or credentials',()=>{
   assert.equal(originPattern('https://cdn.test:8443/media.m3u8'),'https://cdn.test/*');
   assert.equal(originPattern('http://[::1]:8080/media'),'http://[::1]/*');
@@ -477,7 +486,7 @@ test('cancelling TS remux cannot download a delayed MP4 result and retry fetches
   assert.equal(h.calls.filter(call=>call[0]==='fetch'&&call[1]===processingItem.url).length,2);
 });
 
-test('cancelled blob cleanup finishes before a following operation can acquire the saver',async t=>{
+test('cancelled blob cleanup cannot hold a following operation hostage',async t=>{
   const cleanup=deferred();let releasing=false,snapshots=0;
   const h=harness(t,{readBlob:async(url,offset)=>{
     if(offset===-2){releasing=true;await cleanup.promise;return {released:true};}
@@ -486,7 +495,7 @@ test('cancelled blob cleanup finishes before a following operation can acquire t
   },onUpdate:h=>{if(h.saver?.status(blobItem.url)?.status==='fetching')h.saver.cancel();}});
   const saving=h.saver.start(blobItem,'Title');await eventually(()=>releasing);
   await h.saver.start(blobItem,'Another title');
-  assert.equal(snapshots,1);assert.equal(h.saver.busy,true);
+  assert.equal(snapshots,2);assert.equal(h.saver.busy,false);
   cleanup.resolve();await saving;
   assert.equal(h.saver.busy,false);assert.equal(h.saver.status(blobItem.url).status,'interrupted');
   assert.equal(h.calls.some(call=>call[0]==='download'),false);
