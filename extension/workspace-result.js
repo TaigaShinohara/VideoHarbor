@@ -42,6 +42,7 @@ export class RecordingResultView {
     this.name.textContent=snapshot.fileName || '録画ファイル';
     this.location.textContent=snapshot.resultSaved
       ? snapshot.downloadId!==null ? 'ファイルへ保存済みです。保存場所から実ファイルを確認できます。' : '開始前に選んだファイルへ保存済みです。ここで内容を再生できます。'
+      : snapshot.resultShared ? '共有先へ渡しました。保存先で確認してください。録画データはこの画面に保持しています。'
       : 'この作業タブ内にある録画です。まだファイルへ保存していません。';
     this.play.disabled=!snapshot.resultPlaybackAvailable || this.loading;
     this.folder.hidden=!snapshot.resultSaved || snapshot.downloadId===null;

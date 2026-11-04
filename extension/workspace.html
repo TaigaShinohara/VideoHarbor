@@ -24,6 +24,13 @@
     <button id="record-tab" role="tab" aria-selected="false" aria-controls="record-view" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="icons.svg#record"></use></svg><span>録画する</span></button>
   </nav>
   <section id="download-view" class="view" role="tabpanel" aria-labelledby="download-tab">
+    <section id="retained-media" class="notice" aria-label="準備済みの動画" hidden>
+      <p id="retained-media-message" role="status"></p>
+      <div class="actions">
+        <button id="save-retained-media" class="primary">準備済みの動画を保存・共有</button>
+        <button id="discard-retained-media" class="secondary">準備済みの動画を破棄</button>
+      </div>
+    </section>
     <div class="section-heading">
       <div><h2 tabindex="-1" id="download-heading">保存できる動画</h2></div>
       <span id="count" class="count"></span>

@@ -6,6 +6,7 @@ import { validateOutputFormat } from './output-format.js';
 import { publicError } from './utils.js';
 import { outputName } from './filenames.js';
 import { operationWait } from './operation-wait.js';
+import { shareFile } from './file-share.js';
 
 export function originPattern(url) {
   const value=new URL(url);
@@ -26,6 +27,18 @@ export class MediaSaver {
   }
   emit() {this.onUpdate();}
   status(url) {return this.results.get(url);}
+  retained() {return [...this.results].find(([,result])=>result.blob);}
+  discard(url) {
+    if(this.busy)return false;
+    if(!this.results.get(url)?.blob)return false;
+    delete this.results.get(url).blob;
+    this.results.delete(url);this.emit();return true;
+  }
+  retry(url) {
+    const result=this.results.get(url);
+    if(!result?.blob)return Promise.resolve(false);
+    return this.start({...result.source,url},'',result.outputFormat);
+  }
   async missing(urls) {
     const origins=[...new Set(urls.map(originPattern))];
     if(origins.length>32)throw new Error('配信元のサイトが多すぎます。最大32サイトまでです。');
@@ -46,10 +59,17 @@ export class MediaSaver {
     if(this.busy || this.disposed)return Promise.resolve();
     validateOutputFormat(item,outputFormat);
     const previous=this.results.get(item.url);
-    const permission=previous?.origins?.length ? chrome.permissions.request({origins:previous.origins}) : Promise.resolve(true);
-    if(previous && previous.outputFormat!==outputFormat)delete previous.blob;
-    // Keep at most one retry buffer. Original source files remain available for re-fetch.
-    for(const [url,result] of this.results)if(url!==item.url)delete result.blob;
+    const held=this.retained();
+    if(held && (held[0]!==item.url || held[1].outputFormat!==outputFormat))throw new Error('準備済みの動画を保存・共有するか、明示的に破棄してから別の動画・形式を取得してください。');
+    if(previous?.blob && !chrome.downloads?.download) {
+      this.busy=true;this.current=item.url;
+      // Invoke shareFile immediately, before the first await, using the retained file.
+      const sharing=shareFile(previous.blob,previous.downloadName);
+      this.emit();
+      return sharing.then(outcome=>{Object.assign(previous,outcome);return outcome.status==='shared';})
+        .finally(()=>{this.busy=false;this.current=null;this.emit();});
+    }
+    const permission=!previous?.blob && previous?.origins?.length ? chrome.permissions.request({origins:previous.origins}) : Promise.resolve(true);
     for(const [url,result] of this.results) {
       if(this.results.size<100)break;
       if(url!==item.url && !result.blob)this.results.delete(url);
@@ -61,7 +81,7 @@ export class MediaSaver {
   async run(item,title,permission,previous,outputFormat,operation) {
     let objectURL,blobToken,wakeLock=null;
     const sameFormat=previous?.outputFormat===outputFormat;
-    const result={status:'preparing',message:'動画の配信情報を確認しています。',bytesReceived:0,outputFormat,audioUnverified:sameFormat && Boolean(previous?.audioUnverified),
+    const result={...(sameFormat && previous?.blob ? {blob:previous.blob,extension:previous.extension} : {}),source:{type:item.type,mime:item.mime},status:'preparing',message:'動画の配信情報を確認しています。',bytesReceived:0,outputFormat,audioUnverified:sameFormat && Boolean(previous?.audioUnverified),
       downloadName:sameFormat && previous?.status!=='complete' ? previous?.downloadName : undefined};
     this.results.set(item.url,result);this.emit();
     try {
@@ -142,52 +162,10 @@ export class MediaSaver {
   }
   async saveMobile(blob,result,extension,signal) {
     signal.throwIfAborted();
-    if(typeof navigator!=='undefined' && typeof navigator.share==='function') {
-      const mime=blob.type || (extension==='mp4' ? 'video/mp4' : 'video/webm');
-      const file=new File([blob],result.downloadName,{type:mime});
-      if(typeof navigator.canShare!=='function' || navigator.canShare({files:[file]})) {
-        try {
-          await navigator.share({files:[file],title:result.downloadName});
-          result.status='complete';
-          result.message=`共有・保存完了 · ${extension.toUpperCase()}${result.audioUnverified ? ' · 音声の有無は未確認' : ''}`;
-          delete result.blob;
-          return;
-        } catch(err) {
-          if(signal.aborted)throw err;
-          // In mobile WebKit/Safari, navigator.share requires transient user activation (direct tap).
-          // Long async downloads expire activation (NotAllowedError); users may also dismiss (AbortError).
-          // Retain the blob in a 'ready' state so the next tap on "端末に保存" shares with fresh gesture.
-          // Never fall back to <a download> click on mobile because WebKit navigation to blob: fails
-          // with "WebKitBlobResource error 1".
-          if(err?.name==='NotAllowedError' || err?.name==='AbortError') {
-            result.status='ready';
-            result.blob=blob;
-            result.message=`動画の準備完了 · ${extension.toUpperCase()}${result.audioUnverified ? ' · 音声の有無は未確認' : ''} · 「端末に保存」を押してください`;
-            return;
-          }
-        }
-      }
-    }
-    signal.throwIfAborted();
-    const objectURL=URL.createObjectURL(blob);
-    try {
-      const a=document.createElement('a');
-      a.href=objectURL;
-      a.download=result.downloadName;
-      a.style.display='none';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      result.status='complete';
-      result.message=`保存完了 · ${extension.toUpperCase()}${result.audioUnverified ? ' · 音声の有無は未確認' : ''}`;
-      delete result.blob;
-    } catch {
-      result.status='ready';
-      result.blob=blob;
-      result.message=`動画の準備完了 · ${extension.toUpperCase()} · 「端末に保存」を押してください`;
-    } finally {
-      setTimeout(()=>URL.revokeObjectURL(objectURL),60000);
-    }
+    Object.assign(result,await shareFile(blob,result.downloadName));
+    // Retain the payload even after OS handoff: the receiving app's file write
+    // is outside this page's observation. Only explicit discard removes it.
+    result.blob=blob;
   }
   waitForDownload(id) {
     return new Promise((resolve,reject)=> {

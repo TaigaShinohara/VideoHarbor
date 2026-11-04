@@ -1,4 +1,5 @@
 import { outputName } from './filenames.js';
+import { shareFile } from './file-share.js';
 
 const MEMORY_STOP_BYTES = 256 * 1024 * 1024;
 const WRITE_QUEUE_STOP_BYTES = 32 * 1024 * 1024;
@@ -73,6 +74,7 @@ export class RecorderController {
       message: this._message,
       resultReady: Boolean(this._result),
       resultSaved: Boolean(this._result?.saved),
+      resultShared: Boolean(this._result?.shared),
       diskChosen: Boolean(this._pendingOutputHandle),
       chosenFileName: this._pendingOutputHandle?.name || '',
       downloadId: this._result?.downloadId ?? null,
@@ -93,7 +95,7 @@ export class RecorderController {
   }
 
   _restingPhase() {
-    return this._result ? (this._result.saved ? 'saved' : 'ready') : 'idle';
+    return this._result ? (this._result.saved ? 'saved' : this._result.shared ? 'shared' : 'ready') : 'idle';
   }
 
   _refuse(message) {
@@ -661,33 +663,11 @@ export class RecorderController {
         if (finalName) result.fileName = String(finalName).split(/[\\/]/).at(-1) || result.fileName;
       } else {
         terminal = true;
-        if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
-          const file = new File([result.blob], result.fileName, { type: result.blob.type || 'video/webm' });
-          if (typeof navigator.canShare !== 'function' || navigator.canShare({ files: [file] })) {
-            try {
-              await navigator.share({ files: [file], title: result.fileName });
-              result.saved = true;
-              this._phase = 'saved';
-              this._message = '共有・保存完了。録画データはこの画面に保持しています。';
-              return true;
-            } catch (err) {
-              if (err?.name === 'AbortError') {
-                this._phase = 'result';
-                this._message = '共有をキャンセルしました。「録画を保存」から再試行できます。';
-                return false;
-              }
-            }
-          }
-        } else {
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = result.fileName;
-          a.style.display = 'none';
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-          result.saved = true;
-        }
+        const outcome=await shareFile(result.blob,result.fileName);
+        result.shared=outcome.status==='shared';
+        this._phase=outcome.status;
+        this._message=outcome.message;
+        return result.shared;
       }
       this._phase = 'saved';
       this._message = 'ファイル保存完了。録画データはこの画面に保持しています。';
