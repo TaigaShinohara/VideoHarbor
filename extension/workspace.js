@@ -106,10 +106,15 @@ function updateSummary() {
     for(const el of document.querySelectorAll('.image-select')) el.disabled=busy;
   } else for(const el of document.querySelectorAll('.direct-save,.media-save,.frame-permission,.output-format,.record-video-button')) el.disabled=busy;
   $('record-tab').disabled=mediaSaver.busy;
+  for(const id of ['save-retained-media','discard-retained-media'])$(id).disabled=busy;
 }
 function updateMediaUI() {
   if(!state)return;
   updateSummary();
+  const retained=mediaSaver.retained();
+  $('retained-media').hidden=!retained;
+  $('retained-media-message').textContent=retained ? `準備済みの動画 · ${formatBytes(retained[1].blob.size)} · ${retained[1].message}` : '';
+  for(const id of ['save-retained-media','discard-retained-media'])$(id).disabled=mediaSaver.busy || Boolean(recorder?.busy);
   const current=mediaSaver.current && mediaSaver.status(mediaSaver.current);
   document.body.classList.toggle('media-saving',mediaSaver.busy);
   $('media-panel').hidden=!mediaSaver.busy;
@@ -120,7 +125,7 @@ function updateMediaUI() {
   for(const el of document.querySelectorAll('.item-status')) {
     const job=jobFor(elementURL(el));el.textContent=jobLabel(job);el.dataset.state=job?.status || '';
   }
-  for(const el of document.querySelectorAll('.media-save')) {
+  for(const el of document.querySelectorAll('.media-save,.direct-save')) {
     const url=elementURL(el),job=mediaSaver.status(url);
     const hasDownloads=typeof chrome!=='undefined' && Boolean(chrome.downloads?.download);
     const ready=job?.status==='ready' || Boolean(job?.blob);
@@ -335,7 +340,7 @@ function setupRecording() {
   updateRecording(recorder.snapshot());
 }
 function updateRecording(s) {
-  const phases={idle:'待機中',starting:'録画を準備中','awaiting-position-decision':'再生位置を確認してください · 録画未開始','awaiting-audio-decision':'音声を確認してください · 録画未開始',recording:'録画中',paused:'一時停止中',finalizing:'保存を確定中',ready:'録画できました · 保存してください',saving:'ファイルを保存中',saved:'ファイル保存完了',error:'録画・保存に問題が起きました'};
+  const phases={idle:'待機中',starting:'録画を準備中','awaiting-position-decision':'再生位置を確認してください · 録画未開始','awaiting-audio-decision':'音声を確認してください · 録画未開始',recording:'録画中',paused:'一時停止中',finalizing:'保存を確定中',ready:'録画できました · 保存してください',shared:'共有先へ渡しました · 保存先で確認してください',saving:'ファイルを保存中',saved:'ファイル保存完了',error:'録画・保存に問題が起きました'};
   const awaiting=s.phase==='awaiting-audio-decision',positionDecision=s.phase==='awaiting-position-decision';
   const busy=['starting','awaiting-position-decision','awaiting-audio-decision','recording','paused','finalizing','saving'].includes(s.phase);
   const focused=document.activeElement, phaseChanged=previousRecordingPhase!==s.phase;
@@ -412,6 +417,15 @@ function updateRecording(s) {
 $('scan').addEventListener('click',scan);
 $('retry').addEventListener('click',()=>jobAction('retry'));$('cancel').addEventListener('click',()=>jobAction('cancel'));
 $('media-cancel').addEventListener('click',()=>mediaSaver.cancel());
+$('save-retained-media').addEventListener('click',()=>{
+  if(isBusy() || recorder?.busy)return;
+  const held=mediaSaver.retained();if(held)mediaSaver.retry(held[0]).catch(error);
+});
+$('discard-retained-media').addEventListener('click',()=>{
+  if(isBusy() || recorder?.busy)return;
+  const held=mediaSaver.retained();
+  if(held && confirm('準備済みの動画データをこの作業タブから破棄しますか？保存・共有先のファイルは変更しません。'))mediaSaver.discard(held[0]);
+});
 if(KIND === 'images') {
   for(const id of ['query','width','height','type']) $(id).addEventListener('input',()=>{if(state)renderImages();});
   $('select-visible').addEventListener('click',()=>{for(const i of visible)selected.add(i.url);renderImages();});

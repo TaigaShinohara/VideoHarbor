@@ -114,6 +114,29 @@ function harness(t, options = {}) {
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
+for(const failure of ['unsupported','NotAllowedError','InvalidStateError','TypeError','DataError','AbortError','Error']) {
+  test(`sharing a recording keeps it unsaved after ${failure}`,async t=>{
+    const h=harness(t);await h.controller.start('display',false,'memory');await h.controller.stop();
+    delete chrome.downloads;
+    navigator.canShare=()=>failure!=='unsupported';
+    navigator.share=async()=>{throw Object.assign(new Error('synthetic'),{name:failure});};
+    assert.equal(await h.controller.save(),false);
+    const s=h.controller.snapshot();
+    assert.equal(s.phase,'ready');assert.equal(s.resultSaved,false);assert.equal(s.resultReady,true);
+    assert.doesNotMatch(s.message,/保存完了/);
+  });
+}
+
+test('sharing a recording succeeds synchronously from the click but does not claim disk persistence',async t=>{
+  const h=harness(t);await h.controller.start('display',false,'memory');await h.controller.stop();
+  delete chrome.downloads;let called=false;
+  navigator.canShare=()=>true;navigator.share=()=>{called=true;return Promise.resolve();};
+  const sharing=h.controller.save();assert.equal(called,true);assert.equal(await sharing,true);
+  const s=h.controller.snapshot();assert.equal(s.resultShared,true);assert.equal(s.resultSaved,false);
+  assert.equal(s.phase,'shared');assert.ok(await h.controller.getResultFile());
+  assert.equal(await h.controller.start('display',false,'memory'),false,'explicit discard required before replacing shared data');
+});
+
 test('display picker runs synchronously before lock and final data survives stop', async (t) => {
   const h = harness(t);
   const started = h.controller.start('display', false, 'memory');

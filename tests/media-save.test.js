@@ -79,6 +79,15 @@ test('origin permission patterns are scoped hosts and reject unsafe protocols or
   for(const url of ['file:///movie','javascript:alert(1)','https://name:password@cdn.test/file','https://*/movie.m3u8','https://*.cdn.test/movie.m3u8'])assert.throws(()=>originPattern(url));
 });
 
+test('unsaved ready data blocks another candidate and format change without losing its buffer',async t=>{
+  const h=harness(t,{state:'interrupted'});await h.saver.start(blobItem,'Title');
+  const first=h.saver.status(blobItem.url),calls=h.calls.length;
+  assert.throws(()=>h.saver.start({...blobItem,url:blobItem.url+'-other'},'Other'),/破棄/);
+  assert.throws(()=>h.saver.start(blobItem,'Other','mp4'),/破棄/);
+  assert.equal(h.calls.length,calls);assert.equal(h.saver.status(blobItem.url),first);assert.ok(first.blob);
+  assert.equal(h.saver.discard(blobItem.url),true);assert.equal(h.saver.status(blobItem.url),undefined);
+});
+
 test('permission request stays synchronous with the retry click and denial retains retry guidance',async t=>{
   const h=harness(t);
   const item={url:'https://cdn.test/master.m3u8',type:'hls'};
@@ -169,22 +178,25 @@ test('a refetched source with a changed format cannot reuse an incompatible old 
   const first=h.calls.find(call=>call[0]==='download')[1].filename;
   assert.ok(first.endsWith('.mp4'));
   h.state='complete';mime='video/webm';
+  h.saver.discard(blobItem.url);
   await h.saver.start({...blobItem,url:`${blobItem.url}-other`},'Other');
-  assert.equal(h.saver.status(blobItem.url).blob,undefined,'another candidate releases the original retry data');
+  assert.equal(h.saver.status(blobItem.url),undefined,'explicit discard releases the original retry data');
   await h.saver.start(blobItem,'Private title');
   const latest=h.calls.filter(call=>call[0]==='download').at(-1)[1].filename;
   assert.ok(latest.endsWith('.webm'));assert.notEqual(latest,first);
 });
 
-test('starting another candidate releases the previous retry buffer and duplicate starts do no work',async t=>{
+test('another candidate requires explicit discard and duplicate starts do no work',async t=>{
   const wait=deferred();
   const h=harness(t,{state:'interrupted'});
   await h.saver.start(blobItem,'Title');
   assert.ok(h.saver.status(blobItem.url).blob);
   const next={...blobItem,url:'blob:https://page.test/00000000-0000-4000-8000-000000000002'};
   h.readBlob=async(url,offset)=>{if(offset===-2)return {released:true};if(offset===-1)await wait.promise;return {size:3,mime:'video/webm',bytes:offset<0?[]:[1,2,3]};};
+  assert.throws(()=>h.saver.start(next,'Title'),/破棄/);
+  assert.ok(h.saver.status(blobItem.url).blob);h.saver.discard(blobItem.url);
   const second=h.saver.start(next,'Title');
-  assert.equal(h.saver.status(blobItem.url).blob,undefined);
+  assert.equal(h.saver.status(blobItem.url),undefined);
   assert.equal(h.saver.current,next.url);
   const callsBefore=h.calls.length;await h.saver.start(blobItem,'Title');assert.equal(h.calls.length,callsBefore);
   h.saver.cancel();wait.resolve();await second;
@@ -366,7 +378,7 @@ test('same-format MP4 retry reuses its buffer and keeps output format after down
   const blobs=h.calls.filter(call=>call[0]==='objectURL').map(call=>call[1]);assert.equal(blobs[0],blobs[1]);
 });
 
-test('changing output format discards the old retry blob and re-reads the source snapshot',async t=>{
+test('changing output format requires discard before re-reading the source snapshot',async t=>{
   let snapshots=0;
   const h=harness(t,{state:'interrupted',readBlob:async(url,offset)=>{
     if(offset===-2)return {released:true};if(offset===-1)snapshots++;
@@ -374,8 +386,9 @@ test('changing output format discards the old retry blob and re-reads the source
   }});
   await h.saver.start(blobItem,'Title','auto');const previous=h.saver.status(blobItem.url);
   assert.equal(previous.blob.size,3);assert.equal(previous.outputFormat,'auto');
-  h.state='complete';await h.saver.start(blobItem,'Title','mp4');
-  assert.equal(previous.blob,undefined);assert.equal(snapshots,2);
+  h.state='complete';assert.throws(()=>h.saver.start(blobItem,'Title','mp4'),/破棄/);
+  assert.ok(previous.blob);h.saver.discard(blobItem.url);await h.saver.start(blobItem,'Title','mp4');
+  assert.equal(snapshots,2);
   assert.equal(h.saver.status(blobItem.url).outputFormat,'mp4');assert.equal(h.saver.status(blobItem.url).bytesReceived,5);
   const blobs=h.calls.filter(call=>call[0]==='objectURL').map(call=>call[1]);assert.notEqual(blobs[0],blobs[1]);
   assert.deepEqual([...new Uint8Array(await blobs[1].arrayBuffer())],[2,2,2,2,2]);
@@ -388,8 +401,9 @@ test('changed-format retry cannot save a stale MP4 buffer when the new source is
     return {size:3,mime:snapshots===1 ? 'video/mp4' : 'video/webm',bytes:offset<0 ? [] : [1,2,3]};
   }});
   await h.saver.start(blobItem,'Title','auto');const previous=h.saver.status(blobItem.url);assert.ok(previous.blob);
-  h.state='complete';await h.saver.start(blobItem,'Title','mp4');
-  assert.equal(previous.blob,undefined);assert.equal(h.saver.status(blobItem.url).status,'interrupted');
+  h.state='complete';assert.throws(()=>h.saver.start(blobItem,'Title','mp4'),/破棄/);
+  assert.ok(previous.blob);h.saver.discard(blobItem.url);await h.saver.start(blobItem,'Title','mp4');
+  assert.equal(h.saver.status(blobItem.url).status,'interrupted');
   assert.match(h.saver.status(blobItem.url).message,/MP4ではありません/);
   assert.equal(h.calls.filter(call=>call[0]==='download').length,1);
 });
@@ -545,10 +559,11 @@ test('mobile context without chrome.downloads uses navigator.share when availabl
   const h=harness(t,{withoutDownloads:true});
   await h.saver.start(blobItem,'Mobile Title');
   const result=h.saver.status(blobItem.url);
-  assert.equal(result.status,'complete');
+  assert.equal(result.status,'shared');
+  assert.ok(result.blob);
   assert.equal(shared.length,1);
   assert.ok(shared[0].files?.[0] instanceof File);
-  assert.match(result.message,/共有・保存完了/);
+  assert.match(result.message,/共有先へ渡しました/);
 });
 
 test('mobile context transitions to ready when user gesture expires and shares on next tap',async t=>{
@@ -577,14 +592,17 @@ test('mobile context transitions to ready when user gesture expires and shares o
   const readyResult=h.saver.status(blobItem.url);
   assert.equal(readyResult.status,'ready');
   assert.ok(readyResult.blob);
-  assert.match(readyResult.message,/動画の準備完了/);
+  assert.match(readyResult.message,/保持/);
   assert.equal(shared.length,0);
 
   // User taps "端末に保存" with fresh user gesture
-  await h.saver.start(blobItem,'Mobile Title');
+  h.readBlob=()=>{throw new Error('source has expired');};
+  const sharing=h.saver.start(blobItem,'Mobile Title');
+  assert.equal(shared.length,1,'share is called synchronously without re-fetching the expired source');
+  await sharing;
   const completeResult=h.saver.status(blobItem.url);
-  assert.equal(completeResult.status,'complete');
+  assert.equal(completeResult.status,'shared');
   assert.equal(shared.length,1);
-  assert.equal(completeResult.blob,undefined);
-  assert.match(completeResult.message,/共有・保存完了/);
+  assert.equal(completeResult.blob,readyResult.blob);
+  assert.match(completeResult.message,/共有先へ渡しました/);
 });
